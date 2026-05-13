@@ -1,0 +1,9 @@
+.env
+bot.log
+*.log
+data/
+browser_profile/
+__pycache__/
+*.pyc
+.venv/
+venv/
