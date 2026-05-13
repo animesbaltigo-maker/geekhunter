@@ -10,6 +10,7 @@ Commands:
 from __future__ import annotations
 
 import argparse
+import os
 import re
 from pathlib import Path
 
@@ -17,11 +18,14 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 AFFILIATE_HOME = "https://afiliados.mercadolivre.com.br/"
-PROFILE_DIR = Path("browser_profile/ml_affiliate")
 MELI_RE = re.compile(r"https://meli\.la/[A-Za-z0-9]+")
 CHROME_PATHS = [
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
 ]
 
 
@@ -149,27 +153,31 @@ def find_meli_link(page) -> str | None:
 def browser_context():
     class BrowserSession:
         def __enter__(self):
-            PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+            profile_dir = Path(os.getenv("BROWSER_PROFILE_DIR", "browser_profile/ml_affiliate"))
+            profile_dir.mkdir(parents=True, exist_ok=True)
             self.playwright = sync_playwright().start()
             chrome_path = next((path for path in CHROME_PATHS if Path(path).exists()), None)
+            headless = os.getenv("BROWSER_HEADLESS", "").strip().lower() in {"1", "true", "yes", "sim", "on"}
             try:
                 launch_args = {
-                    "headless": False,
+                    "headless": headless,
                     "viewport": {"width": 1280, "height": 900},
+                    "args": ["--no-sandbox", "--disable-dev-shm-usage"],
                 }
                 if chrome_path:
                     launch_args["executable_path"] = chrome_path
                 else:
                     launch_args["channel"] = "chrome"
                 self.context = self.playwright.chromium.launch_persistent_context(
-                    str(PROFILE_DIR),
+                    str(profile_dir),
                     **launch_args,
                 )
             except Exception:
                 self.context = self.playwright.chromium.launch_persistent_context(
-                    str(PROFILE_DIR),
-                    headless=False,
+                    str(profile_dir),
+                    headless=headless,
                     viewport={"width": 1280, "height": 900},
+                    args=["--no-sandbox", "--disable-dev-shm-usage"],
                 )
             self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
             return self.page

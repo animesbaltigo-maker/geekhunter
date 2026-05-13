@@ -5,7 +5,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import msvcrt
+import os
+import sys
 from pathlib import Path
 
 from autopost_bot import run_autopost, setup_logging
@@ -22,12 +23,19 @@ def acquire_single_instance_lock() -> bool:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     _LOCK_FILE = lock_path.open("a+", encoding="utf-8")
     try:
-        msvcrt.locking(_LOCK_FILE.fileno(), msvcrt.LK_NBLCK, 1)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(_LOCK_FILE.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(_LOCK_FILE.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         return False
     _LOCK_FILE.seek(0)
     _LOCK_FILE.truncate()
-    _LOCK_FILE.write("running\n")
+    _LOCK_FILE.write(f"pid={os.getpid()} platform={sys.platform}\n")
     _LOCK_FILE.flush()
     return True
 

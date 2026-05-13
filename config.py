@@ -117,6 +117,9 @@ class Settings:
     dry_run: bool = True
     use_sample_data: bool = False
     product_source: str = "panel"
+    panel_cdp_url: str = "http://127.0.0.1:9222"
+    browser_profile_dir: str = "browser_profile/ml_affiliate"
+    browser_headless: bool = False
     promotion_types: list[str] = field(default_factory=list)
     history_path: str = "data/posted_items.json"
     request_timeout: float = 20
@@ -159,6 +162,9 @@ def load_settings() -> Settings:
         dry_run=_bool_env("DRY_RUN", True),
         use_sample_data=_bool_env("USE_SAMPLE_DATA", False),
         product_source=os.getenv("PRODUCT_SOURCE", "panel").strip().lower(),
+        panel_cdp_url=os.getenv("PANEL_CDP_URL", "http://127.0.0.1:9222").strip(),
+        browser_profile_dir=os.getenv("BROWSER_PROFILE_DIR", "browser_profile/ml_affiliate").strip(),
+        browser_headless=_bool_env("BROWSER_HEADLESS", False),
         promotion_types=_split_csv(os.getenv("PROMOTION_TYPES", "DOD,LIGHTNING,DEAL")),
         history_path=os.getenv("HISTORY_PATH", "data/posted_items.json"),
         request_timeout=float(os.getenv("REQUEST_TIMEOUT", "20")),

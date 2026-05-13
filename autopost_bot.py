@@ -65,7 +65,12 @@ async def rodada_de_posts(settings: Settings, ignore_history: bool = False) -> N
     if settings.product_source == "panel":
         try:
             produtos = await asyncio.to_thread(
-                partial(buscar_produtos_do_painel, limite=candidate_limit, search_terms=active_terms)
+                partial(
+                    buscar_produtos_do_painel,
+                    limite=candidate_limit,
+                    cdp_url=settings.panel_cdp_url,
+                    search_terms=active_terms,
+                )
             )
         except Exception:
             log.exception("Falha ao ler painel de afiliados nesta rodada. Vou tentar de novo na próxima.")
