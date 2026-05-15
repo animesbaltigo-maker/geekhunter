@@ -1365,6 +1365,8 @@ def _bad_image_url(src: str) -> bool:
             "shopee-logo",
             "shopee-pcmall",
             "shopee-mobilemall",
+            "error-robot",
+            "shared/magalu/error",
         )
     )
 

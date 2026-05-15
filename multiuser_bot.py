@@ -649,6 +649,7 @@ class MultiUserBot:
                 "⚠️ <b>Não consegui publicar esse produto.</b>\n\n"
                 f"Confira se o link é de uma plataforma suportada: <b>{SUPPORTED_TEXT}</b>."
             )
+            error_text = f"⚠️ <b>Não consegui publicar esse produto.</b>\n\n{html.escape(_friendly_error(exc))}"
             if service_message_id and edit_service:
                 await self.tg.edit_message_text(chat_id, service_message_id, error_text, reply_markup=main_keyboard())
             else:
@@ -1199,6 +1200,8 @@ def _looks_like_placeholder_image(url: str) -> bool:
             "shopee-pcmall",
             "shopee-mobilemall",
             "assets/",
+            "error-robot",
+            "shared/magalu/error",
         )
     )
 
@@ -1330,6 +1333,17 @@ PLATFORM_TIPS = {
         "AliExpress pode bloquear extracao.\n\n"
         "Tente o link direto do produto: aliexpress.com/item/XXXXXX.html"
     ),
+    "magalu": (
+        "Magalu bloqueou a leitura automatica deste link.\n\n"
+        "Tente:\n"
+        "- Usar o link completo do produto em magazineluiza.com.br/p/...\n"
+        "- Evitar links de busca, carrinho, app ou redirecionadores\n"
+        "- Reenviar depois de abrir o produto no Chrome da VPS"
+    ),
+    "natura": (
+        "Nao consegui ler os dados da Natura neste link.\n\n"
+        "Tente usar o link direto do produto no formato natura.com.br/p/..."
+    ),
 }
 
 
@@ -1364,6 +1378,17 @@ def _telegram_post_link(channel: dict, message_id: int | None) -> str | None:
 
 
 def _friendly_error(exc: Exception) -> str:
+    raw = str(exc).strip()
+    if raw and (
+        raw.startswith("Nao consegui extrair")
+        or raw.startswith("Shopee ")
+        or raw.startswith("Shein ")
+        or raw.startswith("AliExpress ")
+        or raw.startswith("Magalu ")
+        or raw.startswith("Nao consegui ler os dados da Natura")
+        or raw.startswith("Nao consegui extrair dados da Amazon")
+    ):
+        return raw
     text = str(exc).lower()
     if "imagem" in text:
         return "Nao encontrei imagem neste produto. Tente outro link ou uma URL direta da pagina do produto."
