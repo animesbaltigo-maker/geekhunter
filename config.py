@@ -132,6 +132,10 @@ class Settings:
     panel_cdp_url: str = "http://127.0.0.1:9222"
     shopee_panel_url: str = "https://affiliate.shopee.com.br/offer/product_offer"
     shopee_panel_cdp_url: str = "http://127.0.0.1:9222"
+    shopee_affiliate_app_id: str | None = None
+    shopee_affiliate_secret: str | None = None
+    shopee_affiliate_api_url: str = "https://open-api.affiliate.shopee.com.br/graphql"
+    shopee_affiliate_enabled: bool = False
     browser_profile_dir: str = "browser_profile/ml_affiliate"
     browser_headless: bool = False
     promotion_types: list[str] = field(default_factory=list)
@@ -217,6 +221,13 @@ def load_settings() -> Settings:
             "SHOPEE_PANEL_CDP_URL",
             os.getenv("PANEL_CDP_URL", "http://127.0.0.1:9222"),
         ).strip(),
+        shopee_affiliate_app_id=os.getenv("SHOPEE_AFFILIATE_APP_ID") or None,
+        shopee_affiliate_secret=os.getenv("SHOPEE_AFFILIATE_SECRET") or None,
+        shopee_affiliate_api_url=os.getenv(
+            "SHOPEE_AFFILIATE_API_URL",
+            "https://open-api.affiliate.shopee.com.br/graphql",
+        ).strip(),
+        shopee_affiliate_enabled=_bool_env("SHOPEE_AFFILIATE_ENABLED", False),
         browser_profile_dir=os.getenv("BROWSER_PROFILE_DIR", "browser_profile/ml_affiliate").strip(),
         browser_headless=_bool_env("BROWSER_HEADLESS", False),
         promotion_types=_split_csv(os.getenv("PROMOTION_TYPES", "DOD,LIGHTNING,DEAL")),

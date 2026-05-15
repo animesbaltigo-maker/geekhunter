@@ -22,6 +22,7 @@ from offer_mockup import maybe_create_offer_mockup
 from price_alerts import PriceAlertService
 from price_history import PriceHistory
 from product_extractor import detect_platform, extrair_produto
+from shopee_affiliate_api import ShopeeAffiliateAPI
 from storage import Storage
 from telegram_client import TelegramClient, keyboard
 
@@ -1164,6 +1165,17 @@ async def _extrair_com_fallback(product_url: str, settings: Settings) -> dict:
                 return produto
         except Exception as exc:
             log.info("Extracao Amazon reader falhou: %s", exc)
+
+    if platform == "shopee" and settings.shopee_affiliate_enabled:
+        try:
+            api = ShopeeAffiliateAPI(settings)
+            produto = await api.product_from_link(product_url, resolved)
+            if produto:
+                produto = _with_link_resolution(produto, resolved)
+                if _produto_valido(produto, product_url):
+                    return produto
+        except Exception as exc:
+            log.info("Shopee Affiliate API falhou: %s", exc)
 
     if settings.multiuser_browser_fallback:
         for candidate_url in urls_to_try:
