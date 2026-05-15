@@ -172,7 +172,7 @@ class Settings:
     rss_enabled: bool = False
     rss_port: int = 8081
     weekly_report_enabled: bool = True
-    offer_mockup_enabled: bool = True
+    offer_mockup_enabled: bool = False
     offer_mockup_brand: str = "@GeekHunter_Br"
     offer_mockup_background_url: str | None = "https://i.ibb.co/6R41sKyG/Chat-GPT-Image-13-de-mai-de-2026-21-16-28.png"
 
@@ -257,7 +257,7 @@ def load_settings() -> Settings:
         rss_enabled=_bool_env("RSS_ENABLED", False),
         rss_port=int(os.getenv("RSS_PORT", "8081")),
         weekly_report_enabled=_bool_env("WEEKLY_REPORT_ENABLED", True),
-        offer_mockup_enabled=_bool_env("OFFER_MOCKUP_ENABLED", True),
+        offer_mockup_enabled=_bool_env("OFFER_MOCKUP_ENABLED", False),
         offer_mockup_brand=os.getenv("OFFER_MOCKUP_BRAND", "@GeekHunter_Br"),
         offer_mockup_background_url=os.getenv(
             "OFFER_MOCKUP_BACKGROUND_URL",

@@ -126,6 +126,7 @@ async def rodada_de_posts(settings: Settings, ignore_history: bool = False) -> N
                     # Se o painel traz desconto real, ele pode ser mais preciso que a pagina final.
                     panel_title = produto.get("titulo")
                     panel_price = _price_snapshot(produto)
+                    panel_social = _social_snapshot(produto)
                     produto.update(enriched)
                     if not produto.get("imagem") and original_image:
                         produto["imagem"] = original_image
@@ -137,6 +138,7 @@ async def rodada_de_posts(settings: Settings, ignore_history: bool = False) -> N
                         produto["titulo"] = panel_title
                     if panel_title:
                         produto["titulo"] = panel_title
+                    _restore_missing_social(produto, panel_social)
                 else:
                     produto.update({key: value for key, value in enriched.items() if value not in (None, "", 0)})
 
@@ -265,6 +267,22 @@ def _price_snapshot(produto: dict) -> dict:
         "desconto_pct": int(produto.get("desconto_pct") or 0),
         "desconto_estimado": bool(produto.get("desconto_estimado", False)),
     }
+
+
+def _social_snapshot(produto: dict) -> dict:
+    return {
+        "avaliacao": produto.get("avaliacao"),
+        "vendidos": produto.get("vendidos"),
+        "frete_gratis": produto.get("frete_gratis"),
+        "parcelamento": produto.get("parcelamento"),
+    }
+
+
+def _restore_missing_social(produto: dict, panel_social: dict) -> None:
+    for key, original in panel_social.items():
+        current = produto.get(key)
+        if current in (None, "", 0, 0.0, False) and original not in (None, "", 0, 0.0, False):
+            produto[key] = original
 
 
 def _is_confirmed_affiliate_link(link: str | None, original_url: str, settings: Settings) -> bool:
