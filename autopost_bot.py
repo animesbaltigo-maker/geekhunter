@@ -118,12 +118,18 @@ async def rodada_de_posts(settings: Settings, ignore_history: bool = False) -> N
                 or settings.product_source == "panel"
             )
             if should_enrich:
+                original_image = produto.get("imagem")
+                original_link = produto.get("link_original") or produto.get("link")
                 enriched = await extrair_produto(produto["link_original"], settings.request_timeout, strict=False)
                 if settings.product_source == "panel":
                     # Se o painel traz desconto real, ele pode ser mais preciso que a pagina final.
                     panel_title = produto.get("titulo")
                     panel_price = _price_snapshot(produto)
                     produto.update(enriched)
+                    if not produto.get("imagem") and original_image:
+                        produto["imagem"] = original_image
+                    if original_link:
+                        produto["link_original"] = original_link
                     if _is_better_panel_price(panel_price, enriched):
                         produto.update(panel_price)
                     if _bad_enriched_title(produto.get("titulo")) and panel_title:
