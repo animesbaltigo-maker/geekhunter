@@ -16,6 +16,7 @@ from affiliate_linker import generate_affiliate_link
 from ai_generator import gerar_post
 from autopost_state import AutopostState
 from config import Settings, load_settings
+from extraction_quality import evaluate_product_confidence
 from history import PostedHistory
 from ml_deals_page import buscar_ofertas_paginas_ml
 from ml_promotions import buscar_promocoes_oficiais
@@ -145,6 +146,18 @@ async def rodada_de_posts(settings: Settings, ignore_history: bool = False) -> N
             if is_blocked_product(produto, settings):
                 skipped_filtered += 1
                 log.info("Pulando produto filtrado apos enriquecer: %s", produto.get("titulo", "")[:100])
+                continue
+            confidence = evaluate_product_confidence(produto, input_url=produto.get("link_original") or produto.get("link"))
+            produto["confidence_score"] = confidence.score
+            produto["confidence_issues"] = list(confidence.issues)
+            if not confidence.ok:
+                skipped_filtered += 1
+                log.warning(
+                    "Pulando produto com baixa confianca (%s/100): %s | %s",
+                    confidence.score,
+                    produto.get("titulo", "")[:100],
+                    ", ".join(confidence.issues),
+                )
                 continue
             final_keys = product_keys(produto)
             if not ignore_history and _should_skip_product(history, state, final_keys, produto.get("preco_atual")):

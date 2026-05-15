@@ -121,3 +121,24 @@ def test_storage_offer_requests_and_alert_count(tmp_path) -> None:
     assert db.count_offer_requests("air fryer") == 2
     assert db.top_offer_requests(days=7, limit=1) == ["air fryer"]
     assert db.active_price_alert_count(123) == 1
+
+
+def test_storage_records_extraction_failures(tmp_path) -> None:
+    db = Storage(str(tmp_path / "multiuser.sqlite3"))
+
+    db.add_extraction_failure(
+        "https://s.shopee.com.br/test",
+        "placeholder image",
+        user_id=123,
+        platform="shopee",
+        final_url="https://shopee.com.br/product/1/2",
+        method="multiuser",
+        confidence_score=40,
+        confidence_issues=["critical:image_missing_or_placeholder"],
+    )
+
+    failures = db.recent_extraction_failures()
+
+    assert len(failures) == 1
+    assert failures[0]["platform"] == "shopee"
+    assert failures[0]["confidence_score"] == 40

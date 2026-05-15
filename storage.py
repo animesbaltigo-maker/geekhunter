@@ -158,6 +158,19 @@ class Storage:
                     term text not null,
                     created_at real not null
                 );
+
+                create table if not exists extraction_failures (
+                    id integer primary key autoincrement,
+                    telegram_user_id integer,
+                    platform text,
+                    product_url text not null,
+                    final_url text,
+                    method text,
+                    error text not null,
+                    confidence_score integer,
+                    confidence_issues text,
+                    created_at real not null
+                );
                 """
             )
             for column, definition in {
@@ -688,6 +701,54 @@ class Storage:
                 (cutoff, limit),
             ).fetchall()
         return [str(row["term"]) for row in rows]
+
+    def add_extraction_failure(
+        self,
+        product_url: str,
+        error: str,
+        *,
+        user_id: int | None = None,
+        platform: str | None = None,
+        final_url: str | None = None,
+        method: str | None = None,
+        confidence_score: int | None = None,
+        confidence_issues: list[str] | tuple[str, ...] | None = None,
+    ) -> None:
+        with self._lock:
+            self.conn.execute(
+                """
+                insert into extraction_failures
+                    (telegram_user_id, platform, product_url, final_url, method, error,
+                     confidence_score, confidence_issues, created_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    platform,
+                    product_url,
+                    final_url,
+                    method,
+                    error[:1000],
+                    confidence_score,
+                    json.dumps(list(confidence_issues or []), ensure_ascii=False),
+                    time(),
+                ),
+            )
+            self.conn.commit()
+
+    def recent_extraction_failures(self, limit: int = 10) -> list[sqlite3.Row]:
+        with self._lock:
+            return list(
+                self.conn.execute(
+                    """
+                    select *
+                    from extraction_failures
+                    order by created_at desc
+                    limit ?
+                    """,
+                    (limit,),
+                )
+            )
 
     def active_price_alert_count(self, user_id: int) -> int:
         with self._lock:

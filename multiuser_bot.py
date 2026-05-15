@@ -16,6 +16,8 @@ from ai_generator import gerar_post
 from config_manager import ConfigManager
 from config import Settings, load_settings
 from health import basic_health, format_health_report
+from extraction_quality import evaluate_product_confidence, require_confident_product
+from link_resolver import ResolvedLink, resolve_product_link
 from offer_mockup import maybe_create_offer_mockup
 from price_alerts import PriceAlertService
 from price_history import PriceHistory
@@ -476,7 +478,7 @@ class MultiUserBot:
         try:
             if not await self.ensure_user_can_post_to_channel(chat_id, user_id, channel, service_message_id):
                 return False
-            produto = await self.extract_product_for_post(product_url)
+            produto = await self.extract_product_for_post(product_url, user_id=user_id)
             caption = await gerar_post(produto, self.settings)
             image_url = await maybe_create_offer_mockup(produto, self.settings) or produto.get("imagem")
             if not image_url:
@@ -591,10 +593,23 @@ class MultiUserBot:
         self.db.set_state(user_id, None)
         await self.publish_pending(chat_id, user_id, pending_id)
 
-    async def extract_product_for_post(self, product_url: str) -> dict:
-        produto = await _extrair_com_fallback(product_url, self.settings)
-        produto["link"] = product_url
-        return self.price_history.record_product(produto, source="multiuser")
+    async def extract_product_for_post(self, product_url: str, user_id: int | None = None) -> dict:
+        try:
+            produto = await _extrair_com_fallback(product_url, self.settings)
+            produto["link"] = product_url
+            produto["link_original"] = product_url
+            produto = require_confident_product(produto, input_url=product_url)
+            return self.price_history.record_product(produto, source="multiuser")
+        except Exception as exc:
+            platform = detect_platform(product_url)
+            self.db.add_extraction_failure(
+                product_url,
+                str(exc),
+                user_id=user_id,
+                platform=platform,
+                method="multiuser",
+            )
+            raise
 
     async def create_and_post(
         self,
@@ -621,7 +636,7 @@ class MultiUserBot:
                 )
                 return False
 
-            produto = await self.extract_product_for_post(product_url)
+            produto = await self.extract_product_for_post(product_url, user_id=user_id)
             caption = await gerar_post(produto, self.settings)
             if not produto.get("imagem"):
                 raise ValueError("Produto sem imagem confirmada; postagem bloqueada.")
@@ -1116,73 +1131,96 @@ async def _extrair_com_fallback(product_url: str, settings: Settings) -> dict:
     2. HTTP com headers de browser, melhor para Amazon.
     3. Playwright headless, melhor para paginas com JS.
     """
-    platform = detect_platform(product_url)
+    resolved = await resolve_product_link(product_url, timeout=settings.request_timeout)
+    platform = resolved.platform or detect_platform(product_url)
     timeout = settings.request_timeout
     needs_browser = {"shopee", "shein", "aliexpress"}
+    urls_to_try = _candidate_extraction_urls(product_url, resolved)
 
-    if platform not in needs_browser:
+    for candidate_url in urls_to_try:
+        if platform not in needs_browser:
+            try:
+                produto = await extrair_produto(candidate_url, timeout, use_browser=False, strict=False)
+                produto = _with_link_resolution(produto, resolved)
+                if _produto_valido(produto, product_url):
+                    return produto
+            except Exception as exc:
+                log.info("Extracao HTTP simples falhou para %s: %s", platform or "unknown", exc)
+
+    for candidate_url in urls_to_try:
         try:
-            produto = await extrair_produto(product_url, timeout, use_browser=False, strict=False)
-            if _produto_valido(produto):
+            produto = await _extrair_com_headers_reais(candidate_url, timeout)
+            produto = _with_link_resolution(produto, resolved)
+            if _produto_valido(produto, product_url):
                 return produto
         except Exception as exc:
-            log.info("Extracao HTTP simples falhou para %s: %s", platform or "unknown", exc)
-
-    try:
-        produto = await _extrair_com_headers_reais(product_url, timeout)
-        if _produto_valido(produto):
-            return produto
-    except Exception as exc:
-        log.info("Extracao com headers reais falhou para %s: %s", platform or "unknown", exc)
+            log.info("Extracao com headers reais falhou para %s: %s", platform or "unknown", exc)
 
     if platform == "amazon":
         try:
             produto = await _extrair_amazon_reader(product_url, timeout)
-            if _produto_valido(produto):
+            produto = _with_link_resolution(produto, resolved)
+            if _produto_valido(produto, product_url):
                 return produto
         except Exception as exc:
             log.info("Extracao Amazon reader falhou: %s", exc)
 
     if settings.multiuser_browser_fallback:
-        try:
-            async with _BROWSER_FALLBACK_SEMAPHORE:
-                produto = await extrair_produto(
-                    product_url,
-                    max(timeout, 45),
-                    use_browser=True,
-                    strict=False,
-                )
-            if _produto_valido(produto):
-                return produto
-        except Exception as exc:
-            log.warning("Browser headless falhou para %s: %s", platform or product_url, exc)
-        if settings.panel_cdp_url and platform in {"amazon", "shopee", "shein", "magalu", "natura"}:
+        for candidate_url in urls_to_try:
             try:
                 async with _BROWSER_FALLBACK_SEMAPHORE:
                     produto = await extrair_produto(
-                        product_url,
+                        candidate_url,
                         max(timeout, 45),
                         use_browser=True,
                         strict=False,
-                        cdp_url=settings.panel_cdp_url,
                     )
-                if _produto_valido(produto):
+                produto = _with_link_resolution(produto, resolved)
+                if _produto_valido(produto, product_url):
                     return produto
             except Exception as exc:
-                log.warning("Browser CDP falhou para %s: %s", platform or product_url, exc)
+                log.warning("Browser headless falhou para %s: %s", platform or candidate_url, exc)
+        if settings.panel_cdp_url and platform in {"amazon", "shopee", "shein", "magalu", "natura"}:
+            for candidate_url in urls_to_try:
+                try:
+                    async with _BROWSER_FALLBACK_SEMAPHORE:
+                        produto = await extrair_produto(
+                            candidate_url,
+                            max(timeout, 45),
+                            use_browser=True,
+                            strict=False,
+                            cdp_url=settings.panel_cdp_url,
+                        )
+                    produto = _with_link_resolution(produto, resolved)
+                    if _produto_valido(produto, product_url):
+                        return produto
+                except Exception as exc:
+                    log.warning("Browser CDP falhou para %s: %s", platform or candidate_url, exc)
 
     raise ValueError(_erro_extracao(platform))
 
 
-def _produto_valido(produto: dict) -> bool:
-    titulo = str(produto.get("titulo") or "").strip()
-    imagem = str(produto.get("imagem") or "").strip()
-    preco = _parse_money(str(produto.get("preco_atual") or "0")) or 0.0
-    if not titulo or titulo.lower() in {"oferta selecionada", "produto selecionado", "produto", "shopee brasil", "amazon.com.br", "magazine luiza"}:
-        return False
-    if not imagem or _looks_like_placeholder_image(imagem):
-        return False
-    return preco > 0
+def _candidate_extraction_urls(product_url: str, resolved: ResolvedLink) -> list[str]:
+    candidates = [product_url]
+    for url in (resolved.final_url, resolved.canonical_url):
+        if url and url not in candidates:
+            candidates.append(url)
+    return candidates
+
+
+def _with_link_resolution(produto: dict, resolved: ResolvedLink) -> dict:
+    produto["resolved_url"] = resolved.final_url
+    produto["canonical_url"] = resolved.canonical_url
+    produto["canonical_product_id"] = resolved.product_id
+    produto["already_affiliate"] = resolved.already_affiliate
+    return produto
+
+
+def _produto_valido(produto: dict, input_url: str | None = None) -> bool:
+    confidence = evaluate_product_confidence(produto, input_url=input_url)
+    produto["confidence_score"] = confidence.score
+    produto["confidence_issues"] = list(confidence.issues)
+    return confidence.ok
 
 
 def _looks_like_placeholder_image(url: str) -> bool:
