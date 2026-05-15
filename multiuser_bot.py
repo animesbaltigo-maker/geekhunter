@@ -1201,8 +1201,12 @@ async def _extrair_com_fallback(product_url: str, settings: Settings) -> dict:
 
 
 def _candidate_extraction_urls(product_url: str, resolved: ResolvedLink) -> list[str]:
-    candidates = [product_url]
-    for url in (resolved.final_url, resolved.canonical_url):
+    if resolved.resolved:
+        seeds = [resolved.final_url, resolved.canonical_url]
+    else:
+        seeds = [product_url, resolved.final_url, resolved.canonical_url]
+    candidates = []
+    for url in seeds:
         if url and url not in candidates:
             candidates.append(url)
     return candidates
