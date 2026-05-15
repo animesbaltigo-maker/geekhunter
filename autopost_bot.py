@@ -155,23 +155,30 @@ async def rodada_de_posts(settings: Settings, ignore_history: bool = False) -> N
                 log.warning("Produto sem imagem apos enriquecer: %s", produto.get("titulo", "")[:100])
 
             if settings.product_source == "panel" and settings.ml_affiliate_label_id:
-                try:
-                    link = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            generate_affiliate_link,
-                            produto["link_original"],
-                            settings.ml_affiliate_label_id,
-                            cdp_url=settings.panel_cdp_url,
-                            product_id=produto.get("product_id"),
-                            item_id=produto.get("id"),
-                        ),
-                        timeout=15,
-                    )
-                    produto["link"] = link.short_url
-                    if link.product_code:
-                        produto["product_code"] = link.product_code
-                except Exception as exc:
-                    log.warning("Falha ao gerar meli.la; usando link afiliado alternativo: %s", exc)
+                if settings.affiliate_link_mode in {"browser", "panel", "meli", "shortlink"}:
+                    try:
+                        link = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                generate_affiliate_link,
+                                produto["link_original"],
+                                settings.ml_affiliate_label_id,
+                                cdp_url=settings.panel_cdp_url,
+                                product_id=produto.get("product_id"),
+                                item_id=produto.get("id"),
+                            ),
+                            timeout=15,
+                        )
+                        produto["link"] = link.short_url
+                        if link.product_code:
+                            produto["product_code"] = link.product_code
+                    except Exception as exc:
+                        log.warning("Falha ao gerar meli.la; usando link afiliado alternativo: %s", exc)
+                        produto["link"] = gerar_link_afiliado(
+                            produto.get("link_original") or produto.get("link") or "",
+                            str(produto.get("id") or produto.get("product_id") or product_id or ""),
+                            settings,
+                        )
+                else:
                     produto["link"] = gerar_link_afiliado(
                         produto.get("link_original") or produto.get("link") or "",
                         str(produto.get("id") or produto.get("product_id") or product_id or ""),
