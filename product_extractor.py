@@ -24,6 +24,7 @@ SUPPORTED_PLATFORMS = {
 }
 PRODUCT_ID_RE = re.compile(r"/p/(MLB\d+)|\b(MLB\d{6,})\b")
 ITEM_ID_RE = re.compile(r"(?:wid=|item_id=|/)(MLB\d{6,})\b", re.I)
+MLB_URL_ID_RE = re.compile(r"\bMLB-?(\d{6,})\b", re.I)
 BR_PRICE_RE = re.compile(r"R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}|[0-9]+,[0-9]{2})")
 SPLIT_PRICE_RE = re.compile(r"R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*|[0-9]+)(?:\s|,)([0-9]{2})")
 WHOLE_PRICE_RE = re.compile(r"R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*|[0-9]+)(?!\s*[,\.]?\s*\d{2})(?![0-9])")
@@ -57,10 +58,15 @@ async def extrair_produto(
         html_text = ""
 
     produto = _extract_from_html(final_url, html_text, platform)
+    ml_item_details = None
+    ml_api_price = None
     if platform == "mercadolivre":
-        api_price = await _extract_mercadolivre_api_price(final_url, html_text, timeout)
-        if api_price:
-            produto.update(api_price)
+        ml_item_details = await _extract_mercadolivre_api_item(final_url, html_text, timeout)
+        if ml_item_details:
+            produto.update(ml_item_details)
+        ml_api_price = await _extract_mercadolivre_api_price(final_url, html_text, timeout)
+        if ml_api_price:
+            produto.update(ml_api_price)
     if use_browser and (_needs_browser(produto) or platform in {"mercadolivre", "shopee"}):
         try:
             rendered = await asyncio.to_thread(_extract_with_browser, final_url, platform, cdp_url)
@@ -70,6 +76,10 @@ async def extrair_produto(
                         produto[key] = value
             else:
                 produto.update({k: v for k, v in rendered.items() if v not in (None, "", 0)})
+            if ml_item_details:
+                produto.update({k: v for k, v in ml_item_details.items() if v not in (None, "", 0)})
+            if ml_api_price:
+                produto.update(ml_api_price)
             produto["extraction_verified"] = True
         except Exception:
             produto["extraction_verified"] = False
@@ -540,7 +550,51 @@ def _product_id(text: str) -> str | None:
 
 def _item_id(text: str) -> str | None:
     match = ITEM_ID_RE.search(text or "")
-    return match.group(1).upper() if match else None
+    if match:
+        return match.group(1).upper()
+    match = MLB_URL_ID_RE.search(text or "")
+    return f"MLB{match.group(1)}".upper() if match else None
+
+
+async def _extract_mercadolivre_api_item(final_url: str, html_text: str, timeout: float) -> dict | None:
+    item_id = _item_id(final_url) or _item_id(html_text)
+    if not item_id:
+        return None
+    headers = {"Accept": "application/json"}
+    token = os.getenv("ML_ACCESS_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+            resp = await client.get(f"https://api.mercadolibre.com/items/{item_id}")
+            if resp.status_code >= 400:
+                return None
+            data = resp.json()
+    except Exception:
+        return None
+    current = _parse_any_money(data.get("price"))
+    original = _parse_any_money(data.get("original_price")) or current
+    pictures = data.get("pictures") or []
+    image = None
+    if isinstance(pictures, list) and pictures:
+        first = pictures[0] or {}
+        image = first.get("secure_url") or first.get("url")
+    image = image or data.get("secure_thumbnail") or data.get("thumbnail")
+    return {
+        "id": item_id,
+        "product_id": data.get("catalog_product_id") or item_id,
+        "platform": "mercadolivre",
+        "titulo": clean_title(str(data.get("title") or "")),
+        "preco_atual": current or 0,
+        "preco_original": original or current or 0,
+        "desconto_pct": _discount(current, original),
+        "desconto_estimado": False,
+        "imagem": image,
+        "vendidos": f"{data.get('sold_quantity')} vendidos" if data.get("sold_quantity") else "",
+        "frete_gratis": bool(((data.get("shipping") or {}).get("free_shipping"))),
+        "source_url": data.get("permalink") or final_url,
+        "extraction_verified": bool(data.get("title") and image and current),
+    }
 
 
 async def _extract_mercadolivre_api_price(final_url: str, html_text: str, timeout: float) -> dict | None:
@@ -834,7 +888,7 @@ def _extract_with_browser(product_url: str, platform: str, cdp_url: str | None =
         using_cdp = False
         if cdp_url:
             try:
-                browser = p.chromium.connect_over_cdp(cdp_url)
+                browser = p.chromium.connect_over_cdp(cdp_url, timeout=5000)
                 using_cdp = True
             except Exception:
                 browser = None

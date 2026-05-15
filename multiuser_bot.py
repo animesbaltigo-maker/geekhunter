@@ -1142,12 +1142,25 @@ async def _extrair_com_fallback(product_url: str, settings: Settings) -> dict:
                     max(timeout, 45),
                     use_browser=True,
                     strict=False,
-                    cdp_url=settings.panel_cdp_url,
                 )
             if _produto_valido(produto):
                 return produto
         except Exception as exc:
             log.warning("Browser headless falhou para %s: %s", platform or product_url, exc)
+        if settings.panel_cdp_url:
+            try:
+                async with _BROWSER_FALLBACK_SEMAPHORE:
+                    produto = await extrair_produto(
+                        product_url,
+                        max(timeout, 45),
+                        use_browser=True,
+                        strict=False,
+                        cdp_url=settings.panel_cdp_url,
+                    )
+                if _produto_valido(produto):
+                    return produto
+            except Exception as exc:
+                log.warning("Browser CDP falhou para %s: %s", platform or product_url, exc)
 
     raise ValueError(_erro_extracao(platform))
 
