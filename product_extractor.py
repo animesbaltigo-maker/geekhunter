@@ -68,6 +68,7 @@ async def extrair_produto(
         if ml_api_price:
             produto.update(ml_api_price)
     if use_browser and (_needs_browser(produto) or platform in {"mercadolivre", "shopee"}):
+        context = None
         try:
             rendered = await asyncio.to_thread(_extract_with_browser, final_url, platform, cdp_url)
             if produto.get("price_source") == "mercadolivre_api":
@@ -1029,19 +1030,17 @@ def _extract_with_browser(product_url: str, platform: str, cdp_url: str | None =
                 ],
             )
         try:
-            if using_cdp:
-                context = browser.contexts[0] if browser.contexts else browser.new_context()
-            else:
-                context = browser.new_context(
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/124.0.0.0 Safari/537.36"
-                    ),
-                    viewport={"width": 1280, "height": 800},
-                    locale="pt-BR",
-                    timezone_id="America/Sao_Paulo",
-                )
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1280, "height": 800},
+                locale="pt-BR",
+                timezone_id="America/Sao_Paulo",
+            )
+            if not using_cdp:
                 context.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined });")
             page = context.new_page()
             page.goto(product_url, wait_until="domcontentloaded", timeout=40000)
@@ -1067,6 +1066,11 @@ def _extract_with_browser(product_url: str, platform: str, cdp_url: str | None =
             source_url = page.url
             page.close()
         finally:
+            if context is not None:
+                try:
+                    context.close()
+                except Exception:
+                    pass
             browser.close()
     platform_detected = detect_platform(source_url) or platform
     specific = _extract_specific_platform(source_url, html_text, platform_detected)
