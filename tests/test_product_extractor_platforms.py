@@ -148,3 +148,45 @@ def test_multiuser_validation_rejects_placeholder_shopee_preview() -> None:
     }
 
     assert not _produto_valido(produto)
+
+
+def test_extract_mercadolivre_social_uses_og_product_and_matching_price() -> None:
+    html = """
+    <html>
+      <head>
+        <meta property="og:title" content="Colônia Linda Felicidade 100ml O Boticário">
+        <meta property="og:image" content="https://http2.mlstatic.test/colonia.webp">
+      </head>
+      <body>
+        <script>
+          {"type":"price","price":{"previous_price":{"value":143.00,"currency":"BRL"},"current_price":{"value":35.75,"currency":"BRL"},"discount":{"value":75}}}
+        </script>
+      </body>
+    </html>
+    """
+
+    produto = _extract_from_html("https://www.mercadolivre.com.br/social/sk123", html, "mercadolivre")
+
+    assert produto["titulo"] == "Colônia Linda Felicidade 100ml O Boticário"
+    assert produto["imagem"] == "https://http2.mlstatic.test/colonia.webp"
+    assert produto["preco_atual"] == 35.75
+    assert produto["preco_original"] == 143.0
+
+
+def test_extract_aliexpress_uses_affiliate_url_price_payload() -> None:
+    url = "https://pt.aliexpress.com/item/1005005902446151.html?pdp_npi=6%40dis%21BRL%2156.74%2117.59%21%21"
+    html = """
+    <html>
+      <head>
+        <meta property="og:title" content="Lentes Verdes Coloridas AliExpress">
+        <meta property="og:image" content="https://ae01.alicdn.test/lentes.jpg">
+      </head>
+    </html>
+    """
+
+    produto = _extract_from_html(url, html, "aliexpress")
+
+    assert produto["titulo"] == "Lentes Verdes Coloridas AliExpress"
+    assert produto["preco_atual"] == 17.59
+    assert produto["preco_original"] == 56.74
+    assert produto["desconto_pct"] == 69

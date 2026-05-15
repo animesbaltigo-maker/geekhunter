@@ -1225,11 +1225,11 @@ async def _extrair_com_headers_reais(product_url: str, timeout: float) -> dict:
 
 PLATFORM_TIPS = {
     "shopee": (
-        "Shopee as vezes bloqueia a extracao automatica.\n\n"
+        "Shopee exige login na VPS em alguns links afiliados e bloqueou a extracao automatica.\n\n"
         "Tente:\n"
-        "- Abrir o produto no app/site e copiar o link da barra de enderecos\n"
-        "- Evitar links encurtados como s.shopee.com.br\n"
-        "- Usar o link completo do produto"
+        "- Fazer login da Shopee no Chrome da VPS\n"
+        "- Usar o link completo do produto, nao apenas s.shopee.com.br\n"
+        "- Reenviar o link depois do login"
     ),
     "amazon": (
         "Nao consegui extrair dados da Amazon.\n\n"
@@ -1238,8 +1238,8 @@ PLATFORM_TIPS = {
         "- Evitar links de busca, lista ou recomendacao"
     ),
     "shein": (
-        "Shein bloqueia extracao automatica com frequencia.\n\n"
-        "Tente o link direto do produto no formato shein.com.br/...-p-XXXXXX.html"
+        "Shein abriu uma verificacao anti-bot e bloqueou a extracao automatica.\n\n"
+        "Tente o link direto do produto no formato shein.com.br/...-p-XXXXXX.html depois de abrir o site na VPS."
     ),
     "aliexpress": (
         "AliExpress pode bloquear extracao.\n\n"

@@ -162,6 +162,8 @@ def _extract_from_html(final_url: str, html_text: str, platform: str) -> dict:
 
 
 def _extract_specific_platform(final_url: str, html_text: str, platform: str) -> dict:
+    if platform == "mercadolivre" and "/social/" in final_url:
+        return _extract_mercadolivre_social(html_text, final_url)
     if platform == "shopee":
         return _extract_shopee(html_text, final_url)
     if platform == "amazon":
@@ -175,6 +177,113 @@ def _extract_specific_platform(final_url: str, html_text: str, platform: str) ->
     if platform == "natura":
         return _extract_natura(html_text, final_url)
     return {}
+
+
+def _extract_mercadolivre_social(html_text: str, url: str) -> dict:
+    soup = BeautifulSoup(html_text or "", "html.parser")
+    title = _meta(soup, "og:title") or _meta(soup, "twitter:title")
+    image = _meta(soup, "og:image") or _meta(soup, "twitter:image") or _meta(soup, "image")
+    card = _extract_ml_social_matching_card(html_text or "", title or "", image or "")
+    current = card.get("preco_atual") if card else None
+    original = card.get("preco_original") if card else None
+    discount = int(card.get("desconto_pct") or 0) if card else 0
+    item_id = card.get("id") if card else _item_id(html_text)
+    if not current:
+        match = re.search(
+            r'"previous_price":\{"value":([0-9.]+).*?"current_price":\{"value":([0-9.]+).*?'
+            r'(?:"discount(?:_label)?":\{(?:"value":([0-9]+)|"text":"([0-9]+)%))?',
+            html_text or "",
+            re.S,
+        )
+        if match:
+            original = _parse_any_money(match.group(1))
+            current = _parse_any_money(match.group(2))
+            discount = int(match.group(3) or match.group(4) or _discount(current, original) or 0)
+    return _normalize_prices(
+        {
+            "id": item_id or url,
+            "product_id": item_id,
+            "platform": "mercadolivre",
+            "titulo": clean_title(title or "Oferta selecionada"),
+            "preco_atual": current or 0,
+            "preco_original": original or current or 0,
+            "desconto_pct": discount or _discount(current, original),
+            "desconto_estimado": False,
+            "link": url,
+            "link_original": url,
+            "source_url": url,
+            "imagem": image,
+            "vendidos": _extract_sold(html_text or ""),
+            "avaliacao": _extract_rating(html_text or ""),
+            "frete_gratis": _has_free_shipping(html_text or ""),
+            "parcelamento": None,
+            "score": 0,
+            "extraction_verified": bool(title and image and current),
+        }
+    )
+
+
+def _extract_ml_social_matching_card(html_text: str, meta_title: str, meta_image: str = "") -> dict | None:
+    best: tuple[float, dict] | None = None
+    meta_picture_id = _ml_picture_id(meta_image)
+    title_re = re.compile(r'"title":\{"text":"([^"]+)"', re.S)
+    for match in title_re.finditer(html_text or ""):
+        raw_title = _jsonish_unescape(match.group(1))
+        score = _title_similarity(raw_title, meta_title) if meta_title else 0.1
+        if meta_title and score < 0.35:
+            continue
+        start = max(0, match.start() - 2200)
+        end = min(len(html_text), match.end() + 3500)
+        chunk = html_text[start:end]
+        current_match = re.search(r'"current_price":\{"value":([0-9.]+)', chunk)
+        if not current_match:
+            continue
+        previous_match = re.search(r'"previous_price":\{"value":([0-9.]+)', chunk)
+        discount_match = re.search(r'"discount(?:_label)?":\{(?:"value":([0-9]+)|"text":"([0-9]+)%[^"]*")', chunk)
+        item_match = re.search(r'"metadata":\{"id":"(MLB\d+)"', chunk)
+        picture_match = re.search(r'"pictures":\[\{"id":"([^"]+)"', chunk)
+        picture_id = picture_match.group(1) if picture_match else ""
+        if meta_picture_id and picture_id and picture_id not in meta_picture_id and meta_picture_id not in picture_id:
+            continue
+        if meta_picture_id and picture_id:
+            score += 2.0
+        current = _parse_any_money(current_match.group(1))
+        previous = _parse_any_money(previous_match.group(1)) if previous_match else current
+        discount = int((discount_match.group(1) or discount_match.group(2)) if discount_match else _discount(current, previous) or 0)
+        image = None
+        if picture_id:
+            image = f"https://http2.mlstatic.com/D_NQ_NP_{picture_id}-O.webp"
+        item = {
+            "id": item_match.group(1) if item_match else None,
+            "titulo": clean_title(raw_title),
+            "preco_atual": current or 0,
+            "preco_original": previous or current or 0,
+            "desconto_pct": discount,
+            "imagem": image,
+        }
+        if best is None or score > best[0]:
+            best = (score, item)
+    return best[1] if best else None
+
+
+def _ml_picture_id(url: str) -> str:
+    match = re.search(r"D_NQ_NP_([^._/-]+(?:-[^._/-]+)?)", url or "")
+    return match.group(1) if match else ""
+
+
+def _jsonish_unescape(value: str) -> str:
+    try:
+        return json.loads(f'"{value}"')
+    except Exception:
+        return value.replace("\\u002F", "/").replace("\\/", "/")
+
+
+def _title_similarity(left: str, right: str) -> float:
+    a = {word for word in re.findall(r"[\wÀ-ÿ]+", left.lower()) if len(word) > 2}
+    b = {word for word in re.findall(r"[\wÀ-ÿ]+", right.lower()) if len(word) > 2}
+    if not a or not b:
+        return 0.0
+    return len(a & b) / max(len(a), len(b))
 
 
 def _produto_valido_interno(produto: dict) -> bool:
@@ -350,6 +459,7 @@ def _extract_aliexpress(html_text: str, url: str) -> dict:
     image = structured.get("image") or _meta(soup, "og:image") or _meta(soup, "twitter:image")
     current = structured.get("price")
     original = structured.get("original_price")
+    url_current, url_original, url_discount = _aliexpress_prices_from_url(url)
 
     # AliExpress often embeds product data in JSON assigned to window.runParams / __AER_DATA__.
     for match in re.finditer(r'(?:"(?:salePrice|actSalePrice|formattedPrice|price|lowPrice)"\s*:\s*"([^"]+)")', html_text or ""):
@@ -366,11 +476,13 @@ def _extract_aliexpress(html_text: str, url: str) -> dict:
     if not image:
         match = re.search(r'"(?:imagePath|imageUrl|productImage)"\s*:\s*"([^"]+)"', html_text or "")
         image = match.group(1).replace("\\/", "/") if match else None
+    current = current or url_current
+    original = original or url_original
     if not current:
         current, original_from_text, discount = _choose_prices_from_text(soup.get_text("\n", strip=True) or html_text, platform="aliexpress")
         original = original or original_from_text
     else:
-        discount = _discount(current, original)
+        discount = url_discount or _discount(current, original)
 
     produto.update(
         {
@@ -387,6 +499,19 @@ def _extract_aliexpress(html_text: str, url: str) -> dict:
         }
     )
     return _normalize_prices(produto)
+
+
+def _aliexpress_prices_from_url(url: str) -> tuple[float | None, float | None, int]:
+    parsed = urlparse(url)
+    query = parsed.query
+    match = re.search(r"dis%21BRL%21([0-9.]+)%21([0-9.]+)%21", query, re.I)
+    if not match:
+        match = re.search(r"dis!BRL!([0-9.]+)!([0-9.]+)!", query, re.I)
+    if not match:
+        return None, None, 0
+    original = _parse_any_money(match.group(1))
+    current = _parse_any_money(match.group(2))
+    return current, original, _discount(current, original)
 
 
 def _extract_magalu(html_text: str, url: str) -> dict:
