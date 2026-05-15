@@ -34,6 +34,7 @@ async def extrair_produto(
     timeout: float = 25,
     use_browser: bool = True,
     strict: bool = True,
+    cdp_url: str | None = None,
 ) -> dict:
     platform = detect_platform(product_url)
     if not platform:
@@ -62,7 +63,7 @@ async def extrair_produto(
             produto.update(api_price)
     if use_browser and (_needs_browser(produto) or platform in {"mercadolivre", "shopee"}):
         try:
-            rendered = await asyncio.to_thread(_extract_with_browser, final_url, platform)
+            rendered = await asyncio.to_thread(_extract_with_browser, final_url, platform, cdp_url)
             if produto.get("price_source") == "mercadolivre_api":
                 for key, value in rendered.items():
                     if key not in {"preco_atual", "preco_original", "desconto_pct", "desconto_estimado"} and value not in (None, "", 0):
@@ -127,11 +128,12 @@ def _extract_from_html(final_url: str, html_text: str, platform: str) -> dict:
         current_price = fallback_price or current_price
     original_price = structured.get("original_price") or original_price
 
+    final_image = image or structured.get("image")
     return {
         "id": product_id or final_url,
         "product_id": product_id,
         "platform": platform,
-        "titulo": clean_title(title or "Oferta selecionada"),
+        "titulo": clean_title(title or structured.get("title") or "Oferta selecionada"),
         "preco_atual": current_price or 0,
         "preco_original": original_price or current_price or 0,
         "desconto_pct": discount_badge or _discount(current_price, original_price),
@@ -139,13 +141,13 @@ def _extract_from_html(final_url: str, html_text: str, platform: str) -> dict:
         "link": final_url,
         "link_original": final_url,
         "source_url": final_url,
-        "imagem": image,
+        "imagem": final_image,
         "vendidos": _extract_sold(html_text or ""),
         "avaliacao": _extract_rating(html_text or ""),
         "frete_gratis": _has_free_shipping(html_text or ""),
         "parcelamento": None,
         "score": 0,
-        "extraction_verified": bool(html_text and image and (current_price or title)),
+        "extraction_verified": bool(html_text and final_image and (current_price or title or structured.get("title"))),
     }
 
 
@@ -156,11 +158,20 @@ def _extract_specific_platform(final_url: str, html_text: str, platform: str) ->
         return _extract_amazon(html_text, final_url)
     if platform == "shein":
         return _extract_shein(html_text, final_url)
+    if platform == "aliexpress":
+        return _extract_aliexpress(html_text, final_url)
+    if platform == "magalu":
+        return _extract_magalu(html_text, final_url)
+    if platform == "natura":
+        return _extract_natura(html_text, final_url)
     return {}
 
 
 def _produto_valido_interno(produto: dict) -> bool:
-    return bool(produto.get("titulo")) and bool(produto.get("imagem"))
+    title = str(produto.get("titulo") or "").strip()
+    image = str(produto.get("imagem") or "").strip()
+    price = float(produto.get("preco_atual") or 0)
+    return bool(title) and not _bad_product_title(title) and bool(image) and not _bad_image_url(image) and price > 0
 
 
 def _extract_shopee(html_text: str, url: str) -> dict:
@@ -321,6 +332,132 @@ def _extract_shein(html_text: str, url: str) -> dict:
     return _normalize_prices(produto)
 
 
+def _extract_aliexpress(html_text: str, url: str) -> dict:
+    soup = BeautifulSoup(html_text or "", "html.parser")
+    produto = _base_product(url, "aliexpress")
+    structured = _extract_structured_data(soup)
+    title = structured.get("title") or _meta(soup, "og:title") or _meta(soup, "twitter:title") or _title(soup)
+    image = structured.get("image") or _meta(soup, "og:image") or _meta(soup, "twitter:image")
+    current = structured.get("price")
+    original = structured.get("original_price")
+
+    # AliExpress often embeds product data in JSON assigned to window.runParams / __AER_DATA__.
+    for match in re.finditer(r'(?:"(?:salePrice|actSalePrice|formattedPrice|price|lowPrice)"\s*:\s*"([^"]+)")', html_text or ""):
+        current = current or _parse_any_money(match.group(1))
+        if current:
+            break
+    for match in re.finditer(r'(?:"(?:originalPrice|skuAmount|listPrice)"\s*:\s*"([^"]+)")', html_text or ""):
+        original = original or _parse_any_money(match.group(1))
+        if original:
+            break
+    if not title:
+        match = re.search(r'"(?:subject|productTitle|title)"\s*:\s*"([^"]{10,250})"', html_text or "")
+        title = match.group(1) if match else None
+    if not image:
+        match = re.search(r'"(?:imagePath|imageUrl|productImage)"\s*:\s*"([^"]+)"', html_text or "")
+        image = match.group(1).replace("\\/", "/") if match else None
+    if not current:
+        current, original_from_text, discount = _choose_prices_from_text(soup.get_text("\n", strip=True) or html_text, platform="aliexpress")
+        original = original or original_from_text
+    else:
+        discount = _discount(current, original)
+
+    produto.update(
+        {
+            "titulo": clean_title(title or "Oferta selecionada"),
+            "imagem": _normalize_image_url(image),
+            "preco_atual": current or 0,
+            "preco_original": original or current or 0,
+            "desconto_pct": discount or _discount(current, original),
+            "vendidos": _extract_sold(html_text or ""),
+            "avaliacao": _extract_rating(html_text or ""),
+            "frete_gratis": _has_free_shipping(html_text or ""),
+            "parcelamento": None,
+            "extraction_verified": bool(title and image and current),
+        }
+    )
+    return _normalize_prices(produto)
+
+
+def _extract_magalu(html_text: str, url: str) -> dict:
+    soup = BeautifulSoup(html_text or "", "html.parser")
+    produto = _base_product(url, "magalu")
+    structured = _extract_structured_data(soup)
+    title = (
+        structured.get("title")
+        or _meta(soup, "og:title")
+        or _meta(soup, "twitter:title")
+        or _text_first(soup, ("[data-testid='heading-product-title']", "h1"))
+        or _title(soup)
+    )
+    image = structured.get("image") or _meta(soup, "og:image") or _meta(soup, "twitter:image")
+    current = structured.get("price")
+    original = structured.get("original_price")
+    if not current:
+        current, original_from_text, discount = _choose_prices_from_text(soup.get_text("\n", strip=True) or html_text, platform="magalu")
+        original = original or original_from_text
+    else:
+        discount = _discount(current, original)
+    produto.update(
+        {
+            "titulo": clean_title(title or "Oferta selecionada"),
+            "imagem": _normalize_image_url(image),
+            "preco_atual": current or 0,
+            "preco_original": original or current or 0,
+            "desconto_pct": discount or _discount(current, original),
+            "vendidos": _extract_sold(html_text or ""),
+            "avaliacao": _extract_rating(html_text or ""),
+            "frete_gratis": _has_free_shipping(html_text or ""),
+            "parcelamento": _extract_installments_text(html_text),
+            "extraction_verified": bool(title and image and current),
+        }
+    )
+    return _normalize_prices(produto)
+
+
+def _extract_natura(html_text: str, url: str) -> dict:
+    soup = BeautifulSoup(html_text or "", "html.parser")
+    produto = _base_product(url, "natura")
+    structured = _extract_structured_data(soup)
+    title = structured.get("title") or _meta(soup, "og:title") or _meta(soup, "twitter:title") or _text_first(soup, ("h1",)) or _title(soup)
+    image = structured.get("image") or _meta(soup, "og:image") or _meta(soup, "twitter:image")
+    current = structured.get("price")
+    original = structured.get("original_price")
+    if not current:
+        current, original_from_text, discount = _choose_prices_from_text(soup.get_text("\n", strip=True) or html_text, platform="natura")
+        original = original or original_from_text
+    else:
+        discount = _discount(current, original)
+    produto.update(
+        {
+            "titulo": clean_title(title or "Oferta selecionada"),
+            "imagem": _normalize_image_url(image),
+            "preco_atual": current or 0,
+            "preco_original": original or current or 0,
+            "desconto_pct": discount or _discount(current, original),
+            "vendidos": _extract_sold(html_text or ""),
+            "avaliacao": _extract_rating(html_text or ""),
+            "frete_gratis": _has_free_shipping(html_text or ""),
+            "parcelamento": _extract_installments_text(html_text),
+            "extraction_verified": bool(title and image and current),
+        }
+    )
+    return _normalize_prices(produto)
+
+
+def _base_product(url: str, platform: str) -> dict:
+    return {
+        "id": url,
+        "product_id": None,
+        "link": url,
+        "link_original": url,
+        "source_url": url,
+        "platform": platform,
+        "desconto_estimado": False,
+        "score": 0,
+    }
+
+
 def _needs_browser(produto: dict) -> bool:
     return produto.get("titulo") in {"Oferta selecionada", "Produto Mercado Livre"} or not produto.get("preco_atual") or not produto.get("imagem")
 
@@ -464,7 +601,7 @@ def _parse_mercadolivre_price_payload(data: dict) -> dict | None:
 
 
 def _extract_structured_data(soup: BeautifulSoup) -> dict:
-    result: dict[str, float] = {}
+    result: dict = {}
     for tag in soup.find_all("script", type="application/ld+json"):
         try:
             data = json.loads(tag.string or "{}")
@@ -473,6 +610,20 @@ def _extract_structured_data(soup: BeautifulSoup) -> dict:
         for item in _walk_json(data):
             if not isinstance(item, dict):
                 continue
+            if str(item.get("@type", "")).lower() == "product":
+                if item.get("name") and not result.get("title"):
+                    result["title"] = str(item.get("name"))
+                image = item.get("image")
+                if image and not result.get("image"):
+                    if isinstance(image, list):
+                        result["image"] = str(image[0]) if image else ""
+                    else:
+                        result["image"] = str(image)
+                aggregate = item.get("aggregateRating")
+                if isinstance(aggregate, dict):
+                    rating = _parse_any_money(aggregate.get("ratingValue"))
+                    if rating:
+                        result["rating"] = rating
             offers = item.get("offers")
             if isinstance(offers, list):
                 offers = offers[0] if offers else None
@@ -480,6 +631,10 @@ def _extract_structured_data(soup: BeautifulSoup) -> dict:
                 price = _parse_any_money(offers.get("price") or offers.get("lowPrice"))
                 if price:
                     result["price"] = price
+                high = _parse_any_money(offers.get("highPrice"))
+                if high and high > price:
+                    result["original_price"] = high
+                if result.get("title") and result.get("image") and result.get("price"):
                     return result
     return result
 
@@ -612,6 +767,30 @@ def _parse_any_money(value: object) -> float | None:
     return float(match.group(0)) if match else None
 
 
+def _text_first(soup: BeautifulSoup, selectors: tuple[str, ...]) -> str | None:
+    for selector in selectors:
+        node = soup.select_one(selector)
+        if node:
+            text = node.get_text(" ", strip=True)
+            if text:
+                return text
+    return None
+
+
+def _normalize_image_url(value: object) -> str | None:
+    if not value:
+        return None
+    url = str(value).strip().replace("\\/", "/")
+    if url.startswith("//"):
+        return f"https:{url}"
+    return url
+
+
+def _extract_installments_text(text: str) -> str | None:
+    match = re.search(r"(\d{1,2}\s*x\s+de\s+R\$\s*[\d.,]+(?:\s+sem\s+juros)?)", unescape(text or ""), re.I)
+    return re.sub(r"\s+", " ", match.group(1)).strip() if match else None
+
+
 def _parse_brl(value: str) -> float:
     return float(str(value).replace(".", "").replace(",", "."))
 
@@ -648,12 +827,12 @@ def _has_free_shipping(text: str) -> bool:
     return "frete grátis" in text or "frete gratis" in text or "envio grátis" in text or "envio gratis" in text
 
 
-def _extract_with_browser(product_url: str, platform: str, cdp_url: str = "http://127.0.0.1:9222") -> dict:
+def _extract_with_browser(product_url: str, platform: str, cdp_url: str | None = None) -> dict:
     """Extrai produto via browser headless. Nao depende de Chrome aberto."""
     with sync_playwright() as p:
         browser = None
         using_cdp = False
-        if cdp_url and cdp_url != "http://127.0.0.1:9222":
+        if cdp_url:
             try:
                 browser = p.chromium.connect_over_cdp(cdp_url)
                 using_cdp = True
@@ -826,6 +1005,18 @@ def _bad_product_title(title: str | None) -> bool:
     if len(text) < 10:
         return True
     bad_bits = (
+        "oferta selecionada",
+        "produto selecionado",
+        "produto mercado livre",
+        "você tem 30 dias",
+        "voce tem 30 dias",
+        "recebimento do produto",
+        "devolvê-lo",
+        "devolve-lo",
+        "não importa o motivo",
+        "nao importa o motivo",
+        "não é possível acessar",
+        "nao e possivel acessar",
         "qg baltigo",
         "geek hunter",
         "central de afiliados",
@@ -970,7 +1161,24 @@ def _first_product_image(page) -> str | None:
 
 def _looks_like_icon(src: str) -> bool:
     lowered = src.lower()
-    return any(bit in lowered for bit in ("sprite", "logo", "icon", "avatar", "placeholder"))
+    return _bad_image_url(lowered)
+
+
+def _bad_image_url(src: str) -> bool:
+    lowered = (src or "").lower()
+    return any(
+        bit in lowered
+        for bit in (
+            "sprite",
+            "logo",
+            "icon",
+            "avatar",
+            "placeholder",
+            "favicon",
+            "brand",
+            "shopee-logo",
+        )
+    )
 
 
 def _validate_product(produto: dict, strict: bool = True) -> None:

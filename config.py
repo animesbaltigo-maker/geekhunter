@@ -137,7 +137,7 @@ class Settings:
     promotion_types: list[str] = field(default_factory=list)
     history_path: str = "data/posted_items.json"
     request_timeout: float = 20
-    multiuser_browser_fallback: bool = False
+    multiuser_browser_fallback: bool = True
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
     groq_api_key: str | None = None
@@ -222,7 +222,7 @@ def load_settings() -> Settings:
         promotion_types=_split_csv(os.getenv("PROMOTION_TYPES", "DOD,LIGHTNING,DEAL")),
         history_path=os.getenv("HISTORY_PATH", "data/posted_items.json"),
         request_timeout=float(os.getenv("REQUEST_TIMEOUT", "20")),
-        multiuser_browser_fallback=_bool_env("MULTIUSER_BROWSER_FALLBACK", False),
+        multiuser_browser_fallback=_bool_env("MULTIUSER_BROWSER_FALLBACK", True),
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY") or None,
         openai_api_key=os.getenv("OPENAI_API_KEY") or None,
         groq_api_key=os.getenv("GROQ_API_KEY") or None,

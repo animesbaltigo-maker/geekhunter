@@ -1137,7 +1137,13 @@ async def _extrair_com_fallback(product_url: str, settings: Settings) -> dict:
     if settings.multiuser_browser_fallback:
         try:
             async with _BROWSER_FALLBACK_SEMAPHORE:
-                produto = await extrair_produto(product_url, max(timeout, 45), use_browser=True, strict=False)
+                produto = await extrair_produto(
+                    product_url,
+                    max(timeout, 45),
+                    use_browser=True,
+                    strict=False,
+                    cdp_url=settings.panel_cdp_url,
+                )
             if _produto_valido(produto):
                 return produto
         except Exception as exc:
@@ -1147,7 +1153,30 @@ async def _extrair_com_fallback(product_url: str, settings: Settings) -> dict:
 
 
 def _produto_valido(produto: dict) -> bool:
-    return bool(produto.get("titulo")) and bool(produto.get("imagem"))
+    titulo = str(produto.get("titulo") or "").strip()
+    imagem = str(produto.get("imagem") or "").strip()
+    preco = _parse_money(str(produto.get("preco_atual") or "0")) or 0.0
+    if not titulo or titulo.lower() in {"oferta selecionada", "produto selecionado", "produto"}:
+        return False
+    if not imagem or _looks_like_placeholder_image(imagem):
+        return False
+    return preco > 0
+
+
+def _looks_like_placeholder_image(url: str) -> bool:
+    lowered = (url or "").lower()
+    return any(
+        bit in lowered
+        for bit in (
+            "logo",
+            "placeholder",
+            "sprite",
+            "icon",
+            "favicon",
+            "shopee-logo",
+            "brand",
+        )
+    )
 
 
 async def _extrair_com_headers_reais(product_url: str, timeout: float) -> dict:
