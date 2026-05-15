@@ -1134,6 +1134,14 @@ async def _extrair_com_fallback(product_url: str, settings: Settings) -> dict:
     except Exception as exc:
         log.info("Extracao com headers reais falhou para %s: %s", platform or "unknown", exc)
 
+    if platform == "amazon":
+        try:
+            produto = await _extrair_amazon_reader(product_url, timeout)
+            if _produto_valido(produto):
+                return produto
+        except Exception as exc:
+            log.info("Extracao Amazon reader falhou: %s", exc)
+
     if settings.multiuser_browser_fallback:
         try:
             async with _BROWSER_FALLBACK_SEMAPHORE:
@@ -1169,7 +1177,7 @@ def _produto_valido(produto: dict) -> bool:
     titulo = str(produto.get("titulo") or "").strip()
     imagem = str(produto.get("imagem") or "").strip()
     preco = _parse_money(str(produto.get("preco_atual") or "0")) or 0.0
-    if not titulo or titulo.lower() in {"oferta selecionada", "produto selecionado", "produto"}:
+    if not titulo or titulo.lower() in {"oferta selecionada", "produto selecionado", "produto", "shopee brasil", "amazon.com.br", "magazine luiza"}:
         return False
     if not imagem or _looks_like_placeholder_image(imagem):
         return False
@@ -1188,6 +1196,9 @@ def _looks_like_placeholder_image(url: str) -> bool:
             "favicon",
             "shopee-logo",
             "brand",
+            "shopee-pcmall",
+            "shopee-mobilemall",
+            "assets/",
         )
     )
 
@@ -1221,6 +1232,80 @@ async def _extrair_com_headers_reais(product_url: str, timeout: float) -> dict:
         produto["source_url"] = final_url
         produto["platform"] = platform
         return produto
+
+
+async def _extrair_amazon_reader(product_url: str, timeout: float) -> dict:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
+        "Accept-Language": "pt-BR,pt;q=0.9",
+    }
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=headers) as client:
+        resolved = await client.get(product_url)
+        final_url = str(resolved.url)
+        reader_url = f"https://r.jina.ai/http://{final_url}"
+        resp = await client.get(reader_url)
+        resp.raise_for_status()
+        text = resp.text
+
+    title = _amazon_reader_title(text)
+    image = _amazon_reader_image(text, title)
+    current, original, discount = _amazon_reader_prices(text)
+    return {
+        "id": final_url,
+        "product_id": None,
+        "platform": "amazon",
+        "titulo": title or "Oferta selecionada",
+        "preco_atual": current or 0,
+        "preco_original": original or current or 0,
+        "desconto_pct": discount,
+        "desconto_estimado": False,
+        "link": product_url,
+        "link_original": product_url,
+        "source_url": final_url,
+        "imagem": image,
+        "vendidos": "",
+        "avaliacao": _amazon_reader_rating(text),
+        "frete_gratis": "Frete GRÁTIS" in text or "Frete grátis" in text,
+        "parcelamento": None,
+        "score": 0,
+        "extraction_verified": bool(title and image and current),
+    }
+
+
+def _amazon_reader_title(text: str) -> str:
+    match = re.search(r"^#\s+(.+?)(?:\s+\|\s+Amazon\.com\.br)?\s*$", text or "", re.M)
+    return html.unescape(match.group(1)).strip() if match else ""
+
+
+def _amazon_reader_image(text: str, title: str) -> str:
+    if title:
+        pattern = rf"!\[[^\]]*{re.escape(title[:30])}[^\]]*\]\((https://m\.media-amazon\.com/images/I/[^)]+)\)"
+        match = re.search(pattern, text or "", re.I)
+        if match:
+            return match.group(1)
+    match = re.search(r"!\[[^\]]*\]\((https://m\.media-amazon\.com/images/I/(?!.*(?:sprite|sash|Spinner))[^)]+)\)", text or "", re.I)
+    return match.group(1) if match else ""
+
+
+def _amazon_reader_prices(text: str) -> tuple[float, float, int]:
+    discount_match = re.search(
+        r"R\$\s*([\d.,]+)\s+com\s+(\d{1,2})\s+por cento.*?De:\s*R\$\s*([\d.,]+)",
+        text or "",
+        re.I | re.S,
+    )
+    if discount_match:
+        current = _parse_money(discount_match.group(1)) or 0.0
+        discount = int(discount_match.group(2))
+        original = _parse_money(discount_match.group(3)) or current
+        return current, original, discount
+    price_match = re.search(r"R\$\s*([\d.,]+)", text or "")
+    current = _parse_money(price_match.group(1)) if price_match else 0.0
+    return current or 0.0, current or 0.0, 0
+
+
+def _amazon_reader_rating(text: str) -> float:
+    match = re.search(r"([0-5],[0-9])\s+de\s+5\s+estrelas", text or "", re.I)
+    return float(match.group(1).replace(",", ".")) if match else 0.0
 
 
 PLATFORM_TIPS = {

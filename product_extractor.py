@@ -1191,6 +1191,9 @@ def _bad_product_title(title: str | None) -> bool:
         "oferta selecionada",
         "produto selecionado",
         "produto mercado livre",
+        "shopee brasil",
+        "amazon.com.br",
+        "magazine luiza",
         "você tem 30 dias",
         "voce tem 30 dias",
         "recebimento do produto",
@@ -1360,6 +1363,8 @@ def _bad_image_url(src: str) -> bool:
             "favicon",
             "brand",
             "shopee-logo",
+            "shopee-pcmall",
+            "shopee-mobilemall",
         )
     )
 
