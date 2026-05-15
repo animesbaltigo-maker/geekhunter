@@ -41,7 +41,7 @@ async def create_offer_mockup(produto: dict, settings: Settings, out_dir: str = 
     image_url = str(produto.get("imagem") or "")
     bg_url = settings.offer_mockup_background_url or TEMPLATE_URL
     key = hashlib.sha1(
-        f"{produto.get('id') or produto.get('link')}-{image_url}-{produto.get('preco_atual')}-{bg_url}-template-1080x1350-v9".encode()
+        f"{produto.get('id') or produto.get('link')}-{image_url}-{produto.get('preco_atual')}-{bg_url}-template-1080x1350-v10".encode()
     ).hexdigest()[:16]
     out_path = Path(out_dir) / f"{key}.png"
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -135,30 +135,34 @@ def _draw_old_price_and_savings(draw: ImageDraw.ImageDraw, produto: dict) -> Non
     if old_price <= current or current <= 0:
         return
 
-    label_font = _font_text(24, bold=True)
-    old_font = _font_text(42)
+    label_font = _font_text(26, bold=True)
+    old_font = _fit_font(f"R$ {_money(old_price)}", 350, 44, 30, impact=False, bold=True)
     save_label_font = _font_text(22, bold=True)
-    save_font = _fit_font(f"R$ {_money(old_price - current)}", 300, 40, 28, impact=False, bold=True)
+    save_font = _fit_font(f"R$ {_money(old_price - current)}", 310, 44, 30, impact=False, bold=True)
 
-    draw.text((165, 879), "DE", fill=WHITE, font=label_font)
+    # This strip sits just below the product photo in the GeekHunter template.
+    draw.text((165, 858), "DE", fill=WHITE, font=label_font)
     old_text = f"R$ {_money(old_price)}"
-    draw.text((245, 866), old_text, fill=(213, 213, 213), font=old_font)
+    draw.text((245, 846), old_text, fill=(213, 213, 213), font=old_font)
     old_bbox = draw.textbbox((0, 0), old_text, font=old_font)
-    draw.line((245, 897, 245 + old_bbox[2] - old_bbox[0], 897), fill=YELLOW, width=4)
+    old_mid_y = 872
+    draw.line((245, old_mid_y, 245 + old_bbox[2] - old_bbox[0], old_mid_y), fill=YELLOW, width=4)
 
-    draw.text((680, 846), "ECONOMIZE", fill=WHITE, font=save_label_font)
-    draw.text((680, 880), f"R$ {_money(old_price - current)}", fill=YELLOW, font=save_font)
+    draw.text((680, 824), "ECONOMIZE", fill=WHITE, font=save_label_font)
+    draw.text((680, 858), f"R$ {_money(old_price - current)}", fill=YELLOW, font=save_font)
 
 
 def _draw_main_price(draw: ImageDraw.ImageDraw, produto: dict) -> None:
-    label_font = _font_text(26, bold=True)
+    label_font = _font_text(28, bold=True)
     price_text = f"R$ {_money(float(produto.get('preco_atual') or 0))}"
-    price_font = _fit_font(price_text, 650, 100, 68, impact=True, bold=True)
+    price_font = _fit_font(price_text, 590, 90, 58, impact=True, bold=True)
 
-    label_box = (120, 945, 360, 993)
+    label_box = (120, 948, 365, 1002)
     draw.rounded_rectangle(label_box, radius=14, fill=(17, 17, 17))
-    draw.text((142, 954), "POR APENAS", fill=WHITE, font=label_font)
-    draw.text((120, 978), price_text, fill=BLACK, font=price_font)
+    draw.text((142, 960), "POR APENAS", fill=WHITE, font=label_font)
+    price_bbox = draw.textbbox((0, 0), price_text, font=price_font)
+    price_y = 1012 - price_bbox[1]
+    draw.text((120, price_y), price_text, fill=BLACK, font=price_font)
 
 
 def _draw_discount(draw: ImageDraw.ImageDraw, produto: dict) -> None:
@@ -166,17 +170,17 @@ def _draw_discount(draw: ImageDraw.ImageDraw, produto: dict) -> None:
     if discount <= 0:
         return
 
-    pct_font = _font_impact(38)
-    off_font = _font_text(20, bold=True)
+    pct_font = _font_impact(52)
+    off_font = _font_text(24, bold=True)
     center_x = 890
-    group_top = 1005
+    group_top = 986
     pct = f"{discount}%"
     pct_bbox = draw.textbbox((0, 0), pct, font=pct_font)
     off_bbox = draw.textbbox((0, 0), "OFF", font=off_font)
     pct_w = pct_bbox[2] - pct_bbox[0]
     off_w = off_bbox[2] - off_bbox[0]
     draw.text((center_x - pct_w // 2 - pct_bbox[0], group_top - pct_bbox[1]), pct, fill=YELLOW, font=pct_font)
-    draw.text((center_x - off_w // 2 - off_bbox[0], group_top + 46 - off_bbox[1]), "OFF", fill=WHITE, font=off_font)
+    draw.text((center_x - off_w // 2 - off_bbox[0], group_top + 58 - off_bbox[1]), "OFF", fill=WHITE, font=off_font)
 
 
 def _trim_product_image(image: Image.Image) -> Image.Image:
