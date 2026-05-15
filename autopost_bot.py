@@ -8,6 +8,7 @@ import logging
 import sys
 from functools import partial
 from logging.handlers import RotatingFileHandler
+from urllib.parse import parse_qs, urlparse
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -155,6 +156,7 @@ async def rodada_de_posts(settings: Settings, ignore_history: bool = False) -> N
                 log.warning("Produto sem imagem apos enriquecer: %s", produto.get("titulo", "")[:100])
 
             if settings.product_source == "panel" and settings.ml_affiliate_label_id:
+                affiliate_link = None
                 if settings.affiliate_link_mode in {"browser", "panel", "meli", "shortlink"}:
                     try:
                         link = await asyncio.wait_for(
@@ -171,19 +173,24 @@ async def rodada_de_posts(settings: Settings, ignore_history: bool = False) -> N
                         produto["link"] = link.short_url
                         if link.product_code:
                             produto["product_code"] = link.product_code
+                        affiliate_link = link.short_url
                     except Exception as exc:
-                        log.warning("Falha ao gerar meli.la; usando link afiliado alternativo: %s", exc)
-                        produto["link"] = gerar_link_afiliado(
-                            produto.get("link_original") or produto.get("link") or "",
-                            str(produto.get("id") or produto.get("product_id") or product_id or ""),
-                            settings,
-                        )
+                        log.error("Nao gerei link afiliado meli.la. Produto nao sera postado: %s", exc)
                 else:
-                    produto["link"] = gerar_link_afiliado(
+                    affiliate_link = gerar_link_afiliado(
                         produto.get("link_original") or produto.get("link") or "",
                         str(produto.get("id") or produto.get("product_id") or product_id or ""),
                         settings,
                     )
+                    produto["link"] = affiliate_link
+                if not _is_confirmed_affiliate_link(
+                    affiliate_link,
+                    produto.get("link_original") or "",
+                    settings,
+                ):
+                    skipped_filtered += 1
+                    log.error("Pulando produto sem link afiliado confirmado: %s", produto.get("titulo", "")[:100])
+                    continue
 
             texto = await gerar_post(produto, settings)
             post_image = await maybe_create_offer_mockup(produto, settings) or produto.get("imagem")
@@ -258,6 +265,24 @@ def _price_snapshot(produto: dict) -> dict:
         "desconto_pct": int(produto.get("desconto_pct") or 0),
         "desconto_estimado": bool(produto.get("desconto_estimado", False)),
     }
+
+
+def _is_confirmed_affiliate_link(link: str | None, original_url: str, settings: Settings) -> bool:
+    if not link:
+        return False
+    parsed = urlparse(link)
+    host = parsed.netloc.lower()
+    if host.endswith("meli.la") or host == "meli.la":
+        return True
+    if settings.affiliate_url_template and link != original_url:
+        return True
+    query = parse_qs(parsed.query)
+    label = settings.ml_affiliate_label_id or ""
+    if label and label in query.get("matt_word", []):
+        return True
+    if label and label in query.get("utm_campaign", []):
+        return True
+    return False
 
 
 async def _buscar_produtos_ml(settings: Settings, candidate_limit: int, active_terms: list[str]) -> list[dict]:
