@@ -1147,7 +1147,7 @@ async def _extrair_com_fallback(product_url: str, settings: Settings) -> dict:
                 return produto
         except Exception as exc:
             log.warning("Browser headless falhou para %s: %s", platform or product_url, exc)
-        if settings.panel_cdp_url and platform in {"shopee", "shein", "magalu", "natura"}:
+        if settings.panel_cdp_url and platform in {"amazon", "shopee", "shein", "magalu", "natura"}:
             try:
                 async with _BROWSER_FALLBACK_SEMAPHORE:
                     produto = await extrair_produto(
