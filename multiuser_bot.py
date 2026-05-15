@@ -1201,7 +1201,9 @@ async def _extrair_com_fallback(product_url: str, settings: Settings) -> dict:
 
 
 def _candidate_extraction_urls(product_url: str, resolved: ResolvedLink) -> list[str]:
-    if resolved.resolved:
+    if resolved.platform == "shopee":
+        seeds = [product_url, resolved.final_url, resolved.canonical_url]
+    elif resolved.resolved:
         seeds = [resolved.final_url, resolved.canonical_url]
     else:
         seeds = [product_url, resolved.final_url, resolved.canonical_url]
