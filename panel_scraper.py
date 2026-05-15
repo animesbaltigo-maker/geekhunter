@@ -360,6 +360,7 @@ def _normalizar_card(card: dict) -> dict | None:
     return {
         "id": item_id,
         "product_id": product_id,
+        "platform": "mercadolivre",
         "titulo": title_text,
         "preco_atual": float(current_price),
         "preco_original": float(previous_price),

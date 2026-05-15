@@ -28,54 +28,57 @@ def generate_affiliate_link(
     cdp_url: str = "http://127.0.0.1:9222",
     product_id: str | None = None,
     item_id: str | None = None,
+    timeout_ms: int = 8000,
 ) -> AffiliateLink:
     """Use the currently logged-in Chrome session to generate a meli.la link."""
     with sync_playwright() as p:
-        browser = p.chromium.connect_over_cdp(cdp_url)
-        context = browser.contexts[0]
-        page = context.pages[0] if context.pages else context.new_page()
-        page.goto(AFFILIATE_HUB, wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(1500)
+        browser = p.chromium.connect_over_cdp(cdp_url, timeout=timeout_ms)
+        try:
+            context = browser.contexts[0]
+            page = context.pages[0] if context.pages else context.new_page()
+            page.goto(AFFILIATE_HUB, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(1500)
 
-        csrf_token = _capture_csrf_from_create_link(page)
-        if not csrf_token:
-            raise RuntimeError("Nao consegui capturar x-csrf-token. Voce esta logado no painel de afiliados?")
+            csrf_token = _capture_csrf_from_create_link(page)
+            if not csrf_token:
+                raise RuntimeError("Nao consegui capturar x-csrf-token. Voce esta logado no painel de afiliados?")
 
-        resolved_item_id = item_id or product_id or _extract_product_id(product_url)
-        payload = {
-            "itemId": product_id or resolved_item_id,
-            "itemAddToList": resolved_item_id,
-            "tag": tag,
-            "type": "product",
-            "urls": [_strip_scheme(product_url)],
-            "extraCommission": "false",
-        }
+            resolved_item_id = item_id or product_id or _extract_product_id(product_url)
+            payload = {
+                "itemId": product_id or resolved_item_id,
+                "itemAddToList": resolved_item_id,
+                "tag": tag,
+                "type": "product",
+                "urls": [_strip_scheme(product_url)],
+                "extraCommission": "false",
+            }
 
-        response = page.request.post(
-            CREATE_LINK_URL,
-            headers={
-                "content-type": "application/json",
-                "x-csrf-token": csrf_token,
-                "referer": "https://www.mercadolivre.com.br/afiliados/hub?is_affiliate=true",
-            },
-            data=json.dumps(payload),
-        )
-        if response.status != 200:
-            raise RuntimeError(f"createLink falhou: HTTP {response.status} - {response.text()[:500]}")
+            response = page.request.post(
+                CREATE_LINK_URL,
+                headers={
+                    "content-type": "application/json",
+                    "x-csrf-token": csrf_token,
+                    "referer": "https://www.mercadolivre.com.br/afiliados/hub?is_affiliate=true",
+                },
+                data=json.dumps(payload),
+            )
+            if response.status != 200:
+                raise RuntimeError(f"createLink falhou: HTTP {response.status} - {response.text()[:500]}")
 
-        data = response.json()
-        urls = data.get("urls") or []
-        if not urls or not urls[0].get("short_url"):
-            raise RuntimeError(f"Resposta sem short_url: {data}")
+            data = response.json()
+            urls = data.get("urls") or []
+            if not urls or not urls[0].get("short_url"):
+                raise RuntimeError(f"Resposta sem short_url: {data}")
 
-        first = urls[0]
-        browser.close()
-        return AffiliateLink(
-            short_url=first["short_url"],
-            text=first.get("text", ""),
-            product_code=first.get("regex"),
-            long_url=first.get("long_url"),
-        )
+            first = urls[0]
+            return AffiliateLink(
+                short_url=first["short_url"],
+                text=first.get("text", ""),
+                product_code=first.get("regex"),
+                long_url=first.get("long_url"),
+            )
+        finally:
+            browser.close()
 
 
 def _capture_csrf_from_create_link(page) -> str | None:

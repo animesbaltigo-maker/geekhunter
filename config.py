@@ -93,6 +93,16 @@ def _bool_env(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "sim", "on"}
 
 
+def _int_env(name: str) -> int | None:
+    raw = os.getenv(name)
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
 @dataclass(frozen=True)
 class Settings:
     ml_app_id: str | None = None
@@ -109,6 +119,8 @@ class Settings:
     category_ids: list[str] = field(default_factory=list)
     min_discount_pct: int = 10
     min_sold_quantity: int = 0
+    min_rating: float = 0
+    blocked_words: list[str] = field(default_factory=list)
     max_price: float | None = None
     posts_per_round: int = 3
     niche_rotate_min_posts: int = 3
@@ -118,6 +130,8 @@ class Settings:
     use_sample_data: bool = False
     product_source: str = "panel"
     panel_cdp_url: str = "http://127.0.0.1:9222"
+    shopee_panel_url: str = "https://affiliate.shopee.com.br/offer/product_offer"
+    shopee_panel_cdp_url: str = "http://127.0.0.1:9222"
     browser_profile_dir: str = "browser_profile/ml_affiliate"
     browser_headless: bool = False
     promotion_types: list[str] = field(default_factory=list)
@@ -129,8 +143,38 @@ class Settings:
     groq_api_key: str | None = None
     ai_provider: str = "fallback"
     ai_model: str | None = None
+    post_emojis: bool = True
     telegram_bot_token: str | None = None
     telegram_channel_id: str | None = None
+    admin_telegram_id: int | None = None
+    owner_telegram_id: int | None = None
+    health_port: int = 8080
+    user_post_cooldown_seconds: int = 60
+    user_posts_per_hour: int = 20
+    max_channels_free: int = 3
+    free_max_channels: int = 1
+    free_posts_per_day: int = 20
+    pro_max_channels: int = 0
+    pro_posts_per_day: int = 0
+    token_auto_refresh: bool = True
+    price_history_enabled: bool = True
+    price_alert_check_interval: int = 30
+    max_alerts_free: int = 5
+    max_alerts_pro: int = 20
+    daily_summary_enabled: bool = True
+    daily_summary_hour: int = 23
+    weekly_niche_schedule: str = ""
+    curation_mode: bool = False
+    silent_hours: str = ""
+    blacklist_terms: list[str] = field(default_factory=list)
+    outgoing_webhook_url: str | None = None
+    outgoing_webhook_secret: str | None = None
+    rss_enabled: bool = False
+    rss_port: int = 8081
+    weekly_report_enabled: bool = True
+    offer_mockup_enabled: bool = True
+    offer_mockup_brand: str = "@GeekHunter_Br"
+    offer_mockup_background_url: str | None = "https://i.ibb.co/6R41sKyG/Chat-GPT-Image-13-de-mai-de-2026-21-16-28.png"
 
     @property
     def can_post_to_telegram(self) -> bool:
@@ -154,6 +198,8 @@ def load_settings() -> Settings:
         category_ids=_split_csv(os.getenv("CATEGORY_IDS")),
         min_discount_pct=int(os.getenv("MIN_DISCOUNT_PCT", "10")),
         min_sold_quantity=int(os.getenv("MIN_SOLD_QUANTITY", "0")),
+        min_rating=float(os.getenv("MIN_RATING", "0")),
+        blocked_words=_split_csv(os.getenv("BLOCKED_WORDS")),
         max_price=float(os.getenv("MAX_PRICE")) if os.getenv("MAX_PRICE") else None,
         posts_per_round=int(os.getenv("POSTS_PER_ROUND", os.getenv("POSTS_POR_RODADA", "3"))),
         niche_rotate_min_posts=int(os.getenv("NICHE_ROTATE_MIN_POSTS", "3")),
@@ -161,8 +207,16 @@ def load_settings() -> Settings:
         round_interval_minutes=int(os.getenv("ROUND_INTERVAL_MINUTES", "60")),
         dry_run=_bool_env("DRY_RUN", True),
         use_sample_data=_bool_env("USE_SAMPLE_DATA", False),
-        product_source=os.getenv("PRODUCT_SOURCE", "panel").strip().lower(),
+        product_source=_autopost_source(os.getenv("PRODUCT_SOURCE", "panel")),
         panel_cdp_url=os.getenv("PANEL_CDP_URL", "http://127.0.0.1:9222").strip(),
+        shopee_panel_url=os.getenv(
+            "SHOPEE_PANEL_URL",
+            "https://affiliate.shopee.com.br/offer/product_offer",
+        ).strip(),
+        shopee_panel_cdp_url=os.getenv(
+            "SHOPEE_PANEL_CDP_URL",
+            os.getenv("PANEL_CDP_URL", "http://127.0.0.1:9222"),
+        ).strip(),
         browser_profile_dir=os.getenv("BROWSER_PROFILE_DIR", "browser_profile/ml_affiliate").strip(),
         browser_headless=_bool_env("BROWSER_HEADLESS", False),
         promotion_types=_split_csv(os.getenv("PROMOTION_TYPES", "DOD,LIGHTNING,DEAL")),
@@ -174,8 +228,42 @@ def load_settings() -> Settings:
         groq_api_key=os.getenv("GROQ_API_KEY") or None,
         ai_provider=os.getenv("AI_PROVIDER", "fallback").strip().lower(),
         ai_model=os.getenv("AI_MODEL") or None,
+        post_emojis=_bool_env("POST_EMOJIS", True),
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN") or None,
         telegram_channel_id=os.getenv("TELEGRAM_CHANNEL_ID", os.getenv("TELEGRAM_CANAL_ID")) or None,
+        admin_telegram_id=_int_env("ADMIN_TELEGRAM_ID") or _int_env("OWNER_TELEGRAM_ID"),
+        owner_telegram_id=_int_env("OWNER_TELEGRAM_ID") or _int_env("ADMIN_TELEGRAM_ID"),
+        health_port=int(os.getenv("HEALTH_PORT", "8080")),
+        user_post_cooldown_seconds=int(os.getenv("USER_POST_COOLDOWN_SECONDS", "60")),
+        user_posts_per_hour=int(os.getenv("USER_POSTS_PER_HOUR", "20")),
+        max_channels_free=int(os.getenv("MAX_CHANNELS_FREE", "3")),
+        free_max_channels=int(os.getenv("FREE_MAX_CHANNELS", "1")),
+        free_posts_per_day=int(os.getenv("FREE_POSTS_PER_DAY", "20")),
+        pro_max_channels=int(os.getenv("PRO_MAX_CHANNELS", "0")),
+        pro_posts_per_day=int(os.getenv("PRO_POSTS_PER_DAY", "0")),
+        token_auto_refresh=_bool_env("TOKEN_AUTO_REFRESH", True),
+        price_history_enabled=_bool_env("PRICE_HISTORY_ENABLED", True),
+        price_alert_check_interval=int(os.getenv("PRICE_ALERT_CHECK_INTERVAL", "30")),
+        max_alerts_free=int(os.getenv("MAX_ALERTS_FREE", "5")),
+        max_alerts_pro=int(os.getenv("MAX_ALERTS_PRO", "20")),
+        daily_summary_enabled=_bool_env("DAILY_SUMMARY_ENABLED", True),
+        daily_summary_hour=int(os.getenv("DAILY_SUMMARY_HOUR", "23")),
+        weekly_niche_schedule=os.getenv("WEEKLY_NICHE_SCHEDULE", ""),
+        curation_mode=_bool_env("CURATION_MODE", False),
+        silent_hours=os.getenv("SILENT_HOURS", ""),
+        blacklist_terms=_split_csv(os.getenv("BLACKLIST_TERMS")),
+        outgoing_webhook_url=os.getenv("OUTGOING_WEBHOOK_URL") or None,
+        outgoing_webhook_secret=os.getenv("OUTGOING_WEBHOOK_SECRET") or None,
+        rss_enabled=_bool_env("RSS_ENABLED", False),
+        rss_port=int(os.getenv("RSS_PORT", "8081")),
+        weekly_report_enabled=_bool_env("WEEKLY_REPORT_ENABLED", True),
+        offer_mockup_enabled=_bool_env("OFFER_MOCKUP_ENABLED", True),
+        offer_mockup_brand=os.getenv("OFFER_MOCKUP_BRAND", "@GeekHunter_Br"),
+        offer_mockup_background_url=os.getenv(
+            "OFFER_MOCKUP_BACKGROUND_URL",
+            "https://i.ibb.co/6R41sKyG/Chat-GPT-Image-13-de-mai-de-2026-21-16-28.png",
+        )
+        or None,
     )
     if not settings.search_terms and not settings.category_ids:
         object.__setattr__(settings, "search_terms", DEFAULT_SEARCH_TERMS)
@@ -188,3 +276,10 @@ def load_settings() -> Settings:
             ["MLB1051", "MLB1648", "MLB1574", "MLB1196", "MLB1144"],
         )
     return settings
+
+
+def _autopost_source(value: str | None) -> str:
+    source = (value or "panel").strip().lower()
+    if source in {"mixed_panel", "shopee_panel"}:
+        return "panel"
+    return source

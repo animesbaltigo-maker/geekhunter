@@ -7,6 +7,8 @@ from pathlib import Path
 from time import time
 from typing import Any
 
+from price_history import canonical_product_key
+
 
 class AutopostState:
     def __init__(self, path: str = "data/autopost_state.json") -> None:
@@ -92,15 +94,22 @@ class AutopostState:
         return current
 
     def remember_product(self, product_id: str | None) -> None:
-        if not product_id:
+        key = canonical_product_key(product_id)
+        if not key:
             return
-        ids = [str(product_id)] + [item for item in self.data.get("last_posted_ids", []) if item != str(product_id)]
+        ids = [key] + [
+            canonical_product_key(item)
+            for item in self.data.get("last_posted_ids", [])
+            if canonical_product_key(item) and canonical_product_key(item) != key
+        ]
         self.data["last_posted_ids"] = ids[:80]
         self.data["updated_at"] = time()
         self.save()
 
     def recently_posted(self, product_id: str | None) -> bool:
-        return bool(product_id and str(product_id) in set(self.data.get("last_posted_ids", [])))
+        key = canonical_product_key(product_id)
+        ids = {canonical_product_key(item) for item in self.data.get("last_posted_ids", [])}
+        return bool(key and key in ids)
 
     def _target_for_niche(self, niche: str, min_posts: int, max_posts: int) -> int:
         min_posts = max(1, int(min_posts or 1))

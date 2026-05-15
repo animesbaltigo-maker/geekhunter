@@ -16,9 +16,13 @@ from ai_generator import gerar_post
 from autopost_state import AutopostState
 from config import Settings, load_settings
 from history import PostedHistory
+from ml_deals_page import buscar_ofertas_paginas_ml
 from ml_promotions import buscar_promocoes_oficiais
-from ml_scraper import buscar_ofertas_do_dia
+from ml_scraper import buscar_ofertas_do_dia, gerar_link_afiliado
+from offer_mockup import maybe_create_offer_mockup
+from offer_quality import is_blocked_product, score_product
 from panel_scraper import buscar_produtos_do_painel
+from price_history import PriceHistory, product_key, product_keys
 from product_extractor import extrair_produto
 from telegram_poster import postar_no_canal
 
@@ -63,20 +67,13 @@ async def rodada_de_posts(settings: Settings, ignore_history: bool = False) -> N
         target_posts = int(state.data.get("current_niche_target") or 0)
         log.info("Nicho ativo: %s (%s/%s posts)", ", ".join(active_terms), current_posts, target_posts)
     if settings.product_source == "panel":
-        try:
-            produtos = await asyncio.to_thread(
-                partial(
-                    buscar_produtos_do_painel,
-                    limite=candidate_limit,
-                    cdp_url=settings.panel_cdp_url,
-                    search_terms=active_terms,
-                )
-            )
-        except Exception:
-            log.exception("Falha ao ler painel de afiliados nesta rodada. Vou tentar de novo na próxima.")
-            return
+        panel_products = await _buscar_produtos_ml(settings, candidate_limit, active_terms)
+        page_products = await buscar_ofertas_paginas_ml(settings, limite=candidate_limit)
+        produtos = _merge_ranked_products(panel_products, page_products)
     elif settings.product_source == "promotions":
-        produtos = await buscar_promocoes_oficiais(settings, limite=candidate_limit)
+        official_products = await buscar_promocoes_oficiais(settings, limite=candidate_limit)
+        page_products = await buscar_ofertas_paginas_ml(settings, limite=candidate_limit)
+        produtos = _merge_ranked_products(official_products, page_products)
     else:
         produtos = None
 
@@ -85,24 +82,43 @@ async def rodada_de_posts(settings: Settings, ignore_history: bool = False) -> N
         return
 
     history = PostedHistory(settings.history_path)
+    price_history = PriceHistory()
     if produtos is None:
-        produtos = await buscar_ofertas_do_dia(settings, limite=candidate_limit)
+        api_products = await buscar_ofertas_do_dia(settings, limite=candidate_limit)
+        page_products = await buscar_ofertas_paginas_ml(settings, limite=candidate_limit)
+        produtos = _merge_ranked_products(api_products, page_products)
     if not produtos:
         log.warning("Nenhuma oferta encontrada nesta rodada.")
         return
+    produtos = _rank_products(produtos, settings)
 
     postados = 0
+    skipped_recent = 0
+    skipped_filtered = 0
+    failed = 0
     for produto in produtos:
         if postados >= settings.posts_per_round:
             break
-        product_key = produto.get("id") or produto.get("product_id") or produto.get("link_original")
-        if not ignore_history and (history.seen(product_key) or state.recently_posted(product_key)):
+        original_keys = product_keys(produto)
+        product_id = original_keys[0] if original_keys else ""
+        current_price = produto.get("preco_atual")
+        if not ignore_history and _should_skip_product(history, state, original_keys, current_price):
+            skipped_recent += 1
             log.info("Pulando repetido recente: %s", produto["titulo"][:100])
             continue
 
         try:
-            if settings.product_source == "panel" or not produto.get("preco_atual") or not produto.get("imagem"):
-                enriched = await extrair_produto(produto["link_original"], settings.request_timeout)
+            if is_blocked_product(produto, settings):
+                skipped_filtered += 1
+                log.info("Pulando produto filtrado: %s", produto.get("titulo", "")[:100])
+                continue
+            should_enrich = (
+                not produto.get("preco_atual")
+                or not produto.get("imagem")
+                or settings.product_source == "panel"
+            )
+            if should_enrich:
+                enriched = await extrair_produto(produto["link_original"], settings.request_timeout, strict=False)
                 if settings.product_source == "panel":
                     # Se o painel traz desconto real, ele pode ser mais preciso que a pagina final.
                     panel_title = produto.get("titulo")
@@ -117,40 +133,78 @@ async def rodada_de_posts(settings: Settings, ignore_history: bool = False) -> N
                 else:
                     produto.update({key: value for key, value in enriched.items() if value not in (None, "", 0)})
 
+            if is_blocked_product(produto, settings):
+                skipped_filtered += 1
+                log.info("Pulando produto filtrado apos enriquecer: %s", produto.get("titulo", "")[:100])
+                continue
+            final_keys = product_keys(produto)
+            if not ignore_history and _should_skip_product(history, state, final_keys, produto.get("preco_atual")):
+                skipped_recent += 1
+                log.info("Pulando repetido recente apos enriquecer: %s", produto["titulo"][:100])
+                continue
+            produto = price_history.record_product(produto, source=settings.product_source)
+            produto["score"] = score_product(produto, settings)
+
             if not produto.get("imagem"):
                 log.warning("Produto sem imagem apos enriquecer: %s", produto.get("titulo", "")[:100])
 
             if settings.product_source == "panel" and settings.ml_affiliate_label_id:
-                link = await asyncio.to_thread(
-                    generate_affiliate_link,
-                    produto["link_original"],
-                    settings.ml_affiliate_label_id,
-                    product_id=produto.get("product_id"),
-                    item_id=produto.get("id"),
-                )
-                produto["link"] = link.short_url
-                if link.product_code:
-                    produto["product_code"] = link.product_code
+                try:
+                    link = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            generate_affiliate_link,
+                            produto["link_original"],
+                            settings.ml_affiliate_label_id,
+                            cdp_url=settings.panel_cdp_url,
+                            product_id=produto.get("product_id"),
+                            item_id=produto.get("id"),
+                        ),
+                        timeout=15,
+                    )
+                    produto["link"] = link.short_url
+                    if link.product_code:
+                        produto["product_code"] = link.product_code
+                except Exception as exc:
+                    log.warning("Falha ao gerar meli.la; usando link afiliado alternativo: %s", exc)
+                    produto["link"] = gerar_link_afiliado(
+                        produto.get("link_original") or produto.get("link") or "",
+                        str(produto.get("id") or produto.get("product_id") or product_id or ""),
+                        settings,
+                    )
 
             texto = await gerar_post(produto, settings)
-            await postar_no_canal(texto, produto.get("imagem"), settings)
-            history.mark(product_key)
-            state.remember_product(product_key)
-            if settings.product_source == "panel":
-                next_niche = state.remember_niche_post(
-                    settings.search_terms,
-                    settings.niche_rotate_min_posts,
-                    settings.niche_rotate_max_posts,
-                )
-                if next_niche and next_niche not in active_terms:
-                    log.info("Proximo nicho sera: %s", next_niche)
+            post_image = await maybe_create_offer_mockup(produto, settings) or produto.get("imagem")
+            await postar_no_canal(texto, post_image, settings, link=produto.get("link") or produto.get("link_original"))
+            if settings.dry_run:
+                log.info("DRY_RUN ativo. Historico e alternancia nao foram alterados.")
+            else:
+                for key in dict.fromkeys(original_keys + product_keys(produto)):
+                    history.mark(key, produto.get("preco_atual"))
+                    state.remember_product(key)
+                _remember_marketplace_post(state, produto)
+                if settings.product_source == "panel":
+                    next_niche = state.remember_niche_post(
+                        settings.search_terms,
+                        settings.niche_rotate_min_posts,
+                        settings.niche_rotate_max_posts,
+                    )
+                    if next_niche and next_niche not in active_terms:
+                        log.info("Proximo nicho sera: %s", next_niche)
             postados += 1
             log.info("Oferta processada: %s | %s%% OFF", produto["titulo"][:100], produto["desconto_pct"])
             await asyncio.sleep(3)
         except Exception:
+            failed += 1
             log.exception("Erro ao processar produto %s", produto.get("id"))
 
-    log.info("Rodada concluida: %s posts processados.", postados)
+    log.info(
+        "Rodada concluida: %s posts processados (%s repetidos, %s filtrados, %s com erro, %s candidatos).",
+        postados,
+        skipped_recent,
+        skipped_filtered,
+        failed,
+        len(produtos),
+    )
 
 
 def _bad_enriched_title(title: str | None) -> bool:
@@ -159,6 +213,29 @@ def _bad_enriched_title(title: str | None) -> bool:
         return True
     bad_bits = ("qg baltigo", "central de afiliados", "mercado livre", "shopee brasil")
     return any(bit in text for bit in bad_bits) or len(text) < 8
+
+
+def _should_skip_product(
+    history: PostedHistory,
+    state: AutopostState,
+    keys: list[str],
+    current_price: object,
+) -> bool:
+    for key in keys:
+        if history.should_skip(key, current_price):
+            return True
+        if state.recently_posted(key) and not history.seen(key):
+            return True
+    return False
+
+
+def _rank_products(produtos: list[dict], settings: Settings) -> list[dict]:
+    ranked = []
+    for produto in produtos:
+        item = dict(produto)
+        item["score"] = score_product(item, settings)
+        ranked.append(item)
+    return sorted(ranked, key=lambda item: item.get("score", 0), reverse=True)
 
 
 def _price_snapshot(produto: dict) -> dict:
@@ -170,6 +247,21 @@ def _price_snapshot(produto: dict) -> dict:
     }
 
 
+async def _buscar_produtos_ml(settings: Settings, candidate_limit: int, active_terms: list[str]) -> list[dict]:
+    try:
+        return await asyncio.to_thread(
+            partial(
+                buscar_produtos_do_painel,
+                limite=candidate_limit,
+                cdp_url=settings.panel_cdp_url,
+                search_terms=active_terms,
+            )
+        )
+    except Exception:
+        log.exception("Falha ao ler painel de afiliados nesta rodada. Vou tentar de novo na próxima.")
+        return []
+
+
 def _is_better_panel_price(panel: dict, enriched: dict) -> bool:
     panel_current = float(panel.get("preco_atual") or 0)
     panel_original = float(panel.get("preco_original") or 0)
@@ -178,6 +270,16 @@ def _is_better_panel_price(panel: dict, enriched: dict) -> bool:
     enriched_original = float(enriched.get("preco_original") or 0)
     enriched_discount = int(enriched.get("desconto_pct") or 0)
 
+    if enriched_current > 0 and panel_current > 0:
+        ratio = panel_current / enriched_current
+        if ratio < 0.65 or ratio > 1.35:
+            log.warning(
+                "Preco do painel muito diferente da pagina final; usando pagina final. Painel=%.2f Final=%.2f",
+                panel_current,
+                enriched_current,
+            )
+            return False
+
     panel_has_real_discount = panel_current > 0 and panel_original > panel_current and panel_discount > 0
     enriched_has_real_discount = enriched_current > 0 and enriched_original > enriched_current and enriched_discount > 0
     if not panel_has_real_discount:
@@ -185,6 +287,68 @@ def _is_better_panel_price(panel: dict, enriched: dict) -> bool:
     if not enriched_has_real_discount:
         return True
     return panel_current < enriched_current and abs(panel_discount - enriched_discount) <= 5
+
+
+def _merge_ranked_products(*groups: list[dict]) -> list[dict]:
+    products = []
+    seen = set()
+    for group in groups:
+        for product in group or []:
+            key = product_key(product)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            products.append(product)
+    return sorted(products, key=lambda item: item.get("score", 0), reverse=True)
+
+
+def _alternate_marketplace_products(state: AutopostState, ml_products: list[dict], shopee_products: list[dict]) -> list[dict]:
+    ml = _dedupe_products(ml_products)
+    shopee = _dedupe_products(shopee_products)
+    next_marketplace = _next_marketplace(state)
+
+    if next_marketplace == "shopee":
+        first, second = shopee, ml
+    else:
+        first, second = ml, shopee
+
+    ordered: list[dict] = []
+    max_len = max(len(first), len(second))
+    for index in range(max_len):
+        if index < len(first):
+            ordered.append(first[index])
+        if index < len(second):
+            ordered.append(second[index])
+    return ordered
+
+
+def _dedupe_products(products: list[dict]) -> list[dict]:
+    unique = []
+    seen = set()
+    for product in sorted(products or [], key=lambda item: item.get("score", 0), reverse=True):
+        key = product_key(product)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(product)
+    return unique
+
+
+def _next_marketplace(state: AutopostState) -> str:
+    last = str(state.data.get("last_marketplace") or "").lower()
+    if last == "shopee":
+        return "mercadolivre"
+    return "shopee"
+
+
+def _remember_marketplace_post(state: AutopostState, product: dict) -> None:
+    platform = str(product.get("platform") or "").lower()
+    if "shopee" in platform:
+        marketplace = "shopee"
+    else:
+        marketplace = "mercadolivre"
+    state.data["last_marketplace"] = marketplace
+    state.save()
 
 
 async def run_autopost(settings: Settings, ignore_history: bool = False, run_once: bool = False) -> None:

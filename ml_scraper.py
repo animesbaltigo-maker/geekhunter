@@ -8,6 +8,7 @@ from urllib.parse import quote_plus, urlencode, urlparse, parse_qsl, urlunparse
 import httpx
 
 from config import Settings
+from offer_quality import score_product
 
 log = logging.getLogger(__name__)
 
@@ -164,7 +165,19 @@ def _normalizar_produto(item: dict, settings: Settings) -> dict | None:
         "avaliacao": avaliacao,
         "frete_gratis": frete_gratis,
         "parcelamento": extrair_parcelamento(item),
-        "score": _score(desconto_pct, vendidos, avaliacao, frete_gratis),
+        "score": score_product(
+            {
+                "desconto_pct": desconto_pct,
+                "vendidos": vendidos,
+                "avaliacao": avaliacao,
+                "frete_gratis": frete_gratis,
+                "preco_atual": preco_atual,
+                "preco_original": preco_original,
+                "imagem": _imagem_grande(item.get("thumbnail") or ""),
+                "platform": "mercadolivre",
+            },
+            settings,
+        ),
     }
 
 
@@ -216,15 +229,6 @@ def extrair_parcelamento(item: dict) -> str | None:
     if not qtd or not valor:
         return None
     return f"{int(qtd)}x de R$ {float(valor):.2f}".replace(".", ",")
-
-
-def _score(desconto_pct: int, vendidos: int, avaliacao: float, frete_gratis: bool) -> float:
-    score = desconto_pct * 3
-    score += min(vendidos, 500) / 10
-    score += avaliacao * 8
-    if frete_gratis:
-        score += 12
-    return round(score, 2)
 
 
 def _imagem_grande(url: str) -> str | None:

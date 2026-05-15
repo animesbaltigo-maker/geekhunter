@@ -91,6 +91,10 @@ def detect_platform(url: str) -> str | None:
 
 
 def _extract_from_html(final_url: str, html_text: str, platform: str) -> dict:
+    specific = _extract_specific_platform(final_url, html_text, platform)
+    if _produto_valido_interno(specific):
+        return specific
+
     soup = BeautifulSoup(html_text or "", "html.parser")
     body_text = soup.get_text("\n", strip=True)
     title_candidates = [*_html_title_candidates(soup)]
@@ -143,6 +147,178 @@ def _extract_from_html(final_url: str, html_text: str, platform: str) -> dict:
         "score": 0,
         "extraction_verified": bool(html_text and image and (current_price or title)),
     }
+
+
+def _extract_specific_platform(final_url: str, html_text: str, platform: str) -> dict:
+    if platform == "shopee":
+        return _extract_shopee(html_text, final_url)
+    if platform == "amazon":
+        return _extract_amazon(html_text, final_url)
+    if platform == "shein":
+        return _extract_shein(html_text, final_url)
+    return {}
+
+
+def _produto_valido_interno(produto: dict) -> bool:
+    return bool(produto.get("titulo")) and bool(produto.get("imagem"))
+
+
+def _extract_shopee(html_text: str, url: str) -> dict:
+    soup = BeautifulSoup(html_text or "", "html.parser")
+    produto = {
+        "id": url,
+        "product_id": None,
+        "link": url,
+        "link_original": url,
+        "source_url": url,
+        "platform": "shopee",
+        "desconto_estimado": False,
+        "score": 0,
+    }
+
+    title = _meta(soup, "og:title") or _meta(soup, "twitter:title")
+    if not title:
+        h1 = soup.find("h1")
+        title = h1.get_text(" ", strip=True) if h1 else None
+    image = _meta(soup, "og:image") or _meta(soup, "twitter:image")
+    current, original, discount = _choose_prices_from_text(soup.get_text("\n", strip=True) or html_text, platform="shopee")
+
+    produto.update(
+        {
+            "titulo": clean_title(title or "Oferta selecionada"),
+            "imagem": image,
+            "preco_atual": current or 0,
+            "preco_original": original or current or 0,
+            "desconto_pct": discount or _discount(current, original),
+            "vendidos": _extract_sold(html_text or ""),
+            "avaliacao": _extract_rating(html_text or ""),
+            "frete_gratis": _has_free_shipping(html_text or ""),
+            "parcelamento": None,
+            "extraction_verified": bool(title and image),
+        }
+    )
+    return _normalize_prices(produto)
+
+
+def _extract_amazon(html_text: str, url: str) -> dict:
+    soup = BeautifulSoup(html_text or "", "html.parser")
+    produto = {
+        "id": url,
+        "product_id": None,
+        "link": url,
+        "link_original": url,
+        "source_url": url,
+        "platform": "amazon",
+        "desconto_estimado": False,
+        "score": 0,
+    }
+
+    title_el = soup.find(id="productTitle")
+    title = title_el.get_text(" ", strip=True) if title_el else None
+    title = title or _meta(soup, "og:title") or _meta(soup, "twitter:title") or _title(soup)
+
+    image = None
+    img_el = soup.find(id="landingImage") or soup.find(id="imgBlkFront")
+    if img_el:
+        image = img_el.get("src") or img_el.get("data-src")
+    image = image or _meta(soup, "og:image") or _meta(soup, "twitter:image")
+
+    current = None
+    for selector in (
+        "#priceblock_ourprice",
+        "#priceblock_dealprice",
+        ".a-price .a-offscreen",
+        "#corePriceDisplay_desktop_feature_div .a-offscreen",
+        ".priceToPay .a-offscreen",
+    ):
+        el = soup.select_one(selector)
+        if not el:
+            continue
+        current = _parse_any_money(el.get_text(" ", strip=True))
+        if current:
+            break
+    structured = _extract_structured_data(soup)
+    current = current or structured.get("price")
+    text_current, text_original, text_discount = _choose_prices_from_text(html_text or "", current_hint=current, platform="amazon")
+    current = current or text_current
+    original = text_original or current
+
+    produto.update(
+        {
+            "titulo": clean_title(title or "Oferta selecionada"),
+            "imagem": image,
+            "preco_atual": current or 0,
+            "preco_original": original or current or 0,
+            "desconto_pct": text_discount or _discount(current, original),
+            "vendidos": _extract_sold(html_text or ""),
+            "avaliacao": _extract_rating(html_text or ""),
+            "frete_gratis": _has_free_shipping(html_text or ""),
+            "parcelamento": None,
+            "extraction_verified": bool(title and image),
+        }
+    )
+    return _normalize_prices(produto)
+
+
+def _extract_shein(html_text: str, url: str) -> dict:
+    soup = BeautifulSoup(html_text or "", "html.parser")
+    produto = {
+        "id": url,
+        "product_id": None,
+        "link": url,
+        "link_original": url,
+        "source_url": url,
+        "platform": "shein",
+        "desconto_estimado": False,
+        "score": 0,
+    }
+
+    title = None
+    image = None
+    current = None
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string or "")
+        except Exception:
+            continue
+        for item in _walk_json(data):
+            if not isinstance(item, dict) or str(item.get("@type", "")).lower() != "product":
+                continue
+            title = item.get("name") or title
+            offers = item.get("offers")
+            if isinstance(offers, list):
+                offers = offers[0] if offers else None
+            if isinstance(offers, dict):
+                current = _parse_any_money(offers.get("price")) or current
+            imgs = item.get("image")
+            if isinstance(imgs, list) and imgs:
+                image = str(imgs[0])
+            elif isinstance(imgs, str):
+                image = imgs
+            break
+        if title or image or current:
+            break
+
+    title = title or _meta(soup, "og:title") or _meta(soup, "twitter:title") or _title(soup)
+    image = image or _meta(soup, "og:image") or _meta(soup, "twitter:image")
+    if not current:
+        current, _, _ = _choose_prices_from_text(soup.get_text("\n", strip=True) or html_text, platform="shein")
+
+    produto.update(
+        {
+            "titulo": clean_title(title or "Oferta selecionada"),
+            "imagem": image,
+            "preco_atual": current or 0,
+            "preco_original": current or 0,
+            "desconto_pct": 0,
+            "vendidos": _extract_sold(html_text or ""),
+            "avaliacao": _extract_rating(html_text or ""),
+            "frete_gratis": _has_free_shipping(html_text or ""),
+            "parcelamento": None,
+            "extraction_verified": bool(title and image),
+        }
+    )
+    return _normalize_prices(produto)
 
 
 def _needs_browser(produto: dict) -> bool:
@@ -473,36 +649,75 @@ def _has_free_shipping(text: str) -> bool:
 
 
 def _extract_with_browser(product_url: str, platform: str, cdp_url: str = "http://127.0.0.1:9222") -> dict:
+    """Extrai produto via browser headless. Nao depende de Chrome aberto."""
     with sync_playwright() as p:
-        browser = p.chromium.connect_over_cdp(cdp_url)
-        context = browser.contexts[0] if browser.contexts else browser.new_context()
-        page = context.new_page()
-        page.goto(product_url, wait_until="domcontentloaded", timeout=30000)
+        browser = None
+        using_cdp = False
+        if cdp_url and cdp_url != "http://127.0.0.1:9222":
+            try:
+                browser = p.chromium.connect_over_cdp(cdp_url)
+                using_cdp = True
+            except Exception:
+                browser = None
+        if browser is None:
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-web-security",
+                    "--disable-features=VizDisplayCompositor",
+                ],
+            )
         try:
-            page.wait_for_load_state("networkidle", timeout=8000)
-        except Exception:
-            pass
-        page.wait_for_timeout(2500)
-        text = page.locator("body").inner_text(timeout=10000)
-        title = _best_product_title(page, platform, text) or _safe_title(page) or "Oferta selecionada"
-        image = (
-            _safe_attr(page, 'meta[property="og:image"]', "content")
-            or _safe_attr(page, 'meta[name="twitter:image"]', "content")
-            or _first_product_image(page)
-        )
-        dom_price = _extract_price_from_dom(page, platform)
-        if dom_price:
-            current, original, discount_badge = dom_price
-        else:
-            current, original, discount_badge = _choose_prices_from_text(text, platform=platform)
-        product_id = _product_id(page.url) or _product_id(text)
-        source_url = page.url
-        page.close()
-        browser.close()
+            if using_cdp:
+                context = browser.contexts[0] if browser.contexts else browser.new_context()
+            else:
+                context = browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/124.0.0.0 Safari/537.36"
+                    ),
+                    viewport={"width": 1280, "height": 800},
+                    locale="pt-BR",
+                    timezone_id="America/Sao_Paulo",
+                )
+                context.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined });")
+            page = context.new_page()
+            page.goto(product_url, wait_until="domcontentloaded", timeout=40000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass
+            page.wait_for_timeout(2500)
+            text = page.locator("body").inner_text(timeout=10000)
+            html_text = page.content()
+            title = _best_product_title(page, platform, text) or _safe_title(page) or "Oferta selecionada"
+            image = (
+                _safe_attr(page, 'meta[property="og:image"]', "content")
+                or _safe_attr(page, 'meta[name="twitter:image"]', "content")
+                or _first_product_image(page)
+            )
+            dom_price = _extract_price_from_dom(page, platform)
+            if dom_price:
+                current, original, discount_badge = dom_price
+            else:
+                current, original, discount_badge = _choose_prices_from_text(text, platform=platform)
+            product_id = _product_id(page.url) or _product_id(text)
+            source_url = page.url
+            page.close()
+        finally:
+            browser.close()
+    platform_detected = detect_platform(source_url) or platform
+    specific = _extract_specific_platform(source_url, html_text, platform_detected)
+    if _produto_valido_interno(specific):
+        return specific
     return {
         "id": product_id or source_url,
         "product_id": product_id,
-        "platform": detect_platform(source_url) or platform,
+        "platform": platform_detected,
         "source_url": source_url,
         "titulo": clean_title(title),
         "preco_atual": current or 0,
@@ -762,11 +977,20 @@ def _validate_product(produto: dict, strict: bool = True) -> None:
     platform = produto.get("platform")
     strict_check = strict and platform in {"shopee", "mercadolivre"}
     if strict_check and not produto.get("extraction_verified"):
-        raise ValueError("N?o consegui confirmar os dados reais do produto. N?o vou postar com dados chutados.")
-    if not produto.get("imagem"):
-        raise ValueError("N?o consegui confirmar a imagem real do produto. N?o vou postar sem imagem.")
+        raise ValueError(
+            "Nao consegui confirmar os dados reais do produto. "
+            "Tente o link direto da pagina do produto."
+        )
+    if strict and not produto.get("imagem"):
+        raise ValueError(
+            "Nao consegui confirmar a imagem real do produto. "
+            "Tente o link direto da pagina do produto."
+        )
     if strict and float(produto.get("preco_atual") or 0) <= 0:
-        raise ValueError("N?o consegui confirmar o pre?o real do produto. N?o vou postar com pre?o inv?lido.")
+        raise ValueError(
+            "Nao consegui confirmar o preco real do produto. "
+            "Tente o link direto da pagina do produto."
+        )
 
 
 def _safe_title(page) -> str | None:

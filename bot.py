@@ -11,7 +11,13 @@ from pathlib import Path
 
 from autopost_bot import run_autopost, setup_logging
 from config import load_settings
+from health import start_health_server
 from multiuser_bot import MultiUserBot
+from price_alerts import PriceAlertService
+from rss_server import start_rss_server
+from storage import Storage
+from telegram_client import TelegramClient
+from token_refresher import token_refresh_loop
 
 log = logging.getLogger(__name__)
 _LOCK_FILE = None
@@ -56,6 +62,7 @@ async def main() -> None:
         return
 
     settings = load_settings()
+    storage = Storage()
 
     if args.post or (not args.dry_run and not args.once):
         object.__setattr__(settings, "dry_run", False)
@@ -63,7 +70,7 @@ async def main() -> None:
         object.__setattr__(settings, "dry_run", True)
 
     if args.only_multiuser:
-        await MultiUserBot().run()
+        await MultiUserBot(settings, storage).run()
         return
 
     if args.once or args.only_auto:
@@ -71,10 +78,19 @@ async def main() -> None:
         return
 
     log.info("Launcher ativo: autopostagem + multiusuario.")
-    await asyncio.gather(
+    tasks = [
         run_autopost(settings, ignore_history=args.ignore_history, run_once=False),
-        MultiUserBot().run(),
-    )
+        MultiUserBot(settings, storage).run(),
+        start_health_server(settings, storage),
+    ]
+    if settings.token_auto_refresh:
+        tasks.append(token_refresh_loop(settings))
+    if settings.price_history_enabled and settings.telegram_bot_token:
+        tg = TelegramClient(settings.telegram_bot_token, settings.request_timeout)
+        tasks.append(PriceAlertService(storage, tg, settings).checker_loop())
+    if settings.rss_enabled:
+        tasks.append(start_rss_server(settings, storage))
+    await asyncio.gather(*tasks)
 
 
 if __name__ == "__main__":
